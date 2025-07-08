@@ -4,10 +4,12 @@ import {
     guardarMensajeFirestore,
     buscarMensajesPorPalabraClave,
     obtenerMensajesRecientes
-} from '../services/firestoreService.js'; // Reemplazar llamadas a lib/memory.js
+} from '../services/firestoreService.js';
 import { fetchAndParseDDG } from '../lib/internet.js';
 import * as terapiaLogic from '../modules/modo_terapia/logica_modo_terapia.js';
 import * as terapiaContent from '../modules/modo_terapia/contenido_terapia.js';
+import { detectarEmocion } from '../modules/analisis_emocional/detectarEmocion.js';
+import { esEmocionNegativa, EMOCIONES } from '../modules/analisis_emocional/emociones_basicas.js';
 
 const OPENAI_API_KEY = 'TU_API_KEY_AQUI'; // Reemplaza con la clave real
 const MOCK_USER_ID = 'user123'; // Placeholder for user identification, debería ser dinámico
@@ -29,30 +31,42 @@ export function setViewTextWebsiteTool(tool) {
 }
 
 export async function getWillyResponse(userMessageContent) {
-  // 1. Save user message to Firestore
+  const userMessageLower = userMessageContent.toLowerCase();
+  let willyResponseContent = "";
+  let initialTherapyMessage = "";
+
+  // 1. Detect emotion in user's message
+  const emocionDetectada = detectarEmocion(userMessageContent); // Asumiendo que es síncrona por ahora
+  console.log(`[api/openai.js] Emoción detectada para mensaje de usuario: ${emocionDetectada}`);
+
+  // 2. Save user message to Firestore, now including the detected emotion
   try {
     await guardarMensajeFirestore({
       userId: MOCK_USER_ID,
       role: 'user',
       message: userMessageContent,
-      // topic, emotion, relevante can be added later or through NLP/user input
+      emotion: emocionDetectada,
+      // topic, relevante can be added later
     });
   } catch (error) {
     console.error("[api/openai.js] Error guardando mensaje de usuario en Firestore:", error);
-    // Decidir si continuar o devolver un error. Por ahora, continuamos.
   }
 
-  const userMessageLower = userMessageContent.toLowerCase();
-  let willyResponseContent = "";
-  let initialTherapyMessage = "";
-
-  // 2. Therapy Mode Logic
+  // 3. Therapy Mode Logic (check before standard operations)
+  // Note: initialTherapyMessage was already declared
   if (terapiaLogic.detectarDesactivacionTerapia(userMessageLower)) {
     initialTherapyMessage = terapiaLogic.desactivarModoTerapia();
     if (initialTherapyMessage) willyResponseContent = initialTherapyMessage;
-  } else if (terapiaLogic.estaEnModoTerapia() || terapiaLogic.detectarNecesidadTerapia(userMessageLower)) {
+  } else if (terapiaLogic.estaEnModoTerapia() || terapiaLogic.detectarNecesidadTerapia(userMessageLower) || (emocionDetectada && esEmocionNegativa(emocionDetectada) && !terapiaLogic.estaEnModoTerapia())) {
+    // Condición adicional: si se detecta emoción negativa fuerte y no está en modo terapia, puede activarse o responder con más cuidado.
+    // Por ahora, si detecta necesidad directa o ya está en modo, o si es emoción negativa (y no está en modo) -> entra en lógica de terapia.
     if (!terapiaLogic.estaEnModoTerapia()) {
-      initialTherapyMessage = terapiaLogic.activarModoTerapia();
+        // Si la activación es por emoción negativa detectada y no por keyword directa de "modo terapia"
+        if (emocionDetectada && esEmocionNegativa(emocionDetectada) && !ACTIVAR_KEYWORDS.some(kw => userMessageLower.includes(kw))) {
+             initialTherapyMessage = terapiaLogic.activarModoTerapia() + `\nHe notado que quizás te sientes ${emocionDetectada}. Estoy aquí para escucharte.`;
+        } else {
+            initialTherapyMessage = terapiaLogic.activarModoTerapia();
+        }
     }
 
     const recentMessagesForTherapyRaw = await obtenerMensajesRecientes(MOCK_USER_ID, 10);
@@ -62,15 +76,15 @@ export async function getWillyResponse(userMessageContent) {
     }));
 
     const therapyResponse = await terapiaLogic.responderComoTerapia(
-      userMessageContent, // Este es el mensaje actual del usuario
+      userMessageContent,
       axios.post,
       OPENAI_API_KEY,
-      recentMessagesForTherapy // Historial que ya incluye el mensaje actual del usuario
+      recentMessagesForTherapy
     );
     willyResponseContent = initialTherapyMessage ? initialTherapyMessage + "\n\n" + therapyResponse : therapyResponse;
 
     try {
-      await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'willy', message: willyResponseContent });
+      await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'willy', message: willyResponseContent, emotion: detectarEmocion(willyResponseContent) }); // Willy también puede tener emociones en su respuesta
     } catch (error) {
       console.error("[api/openai.js] Error guardando respuesta de Willy (terapia) en Firestore:", error);
     }
@@ -98,7 +112,18 @@ export async function getWillyResponse(userMessageContent) {
   // 4. Standard Operation: Internet Search or Memory Recall or General Chat
   let memoryContext = "";
   let internetContext = "";
-  let finalSystemPrompt = baseSystemPrompt;
+  let finalSystemPrompt = baseSystemPrompt; // Inicia con el prompt base
+
+  // Modificación del system prompt si se detecta emoción y no está en modo terapia explícito
+  if (emocionDetectada && emocionDetectada !== EMOCIONES.NEUTRO && !terapiaLogic.estaEnModoTerapia()) {
+    if (esEmocionNegativa(emocionDetectada)) {
+      finalSystemPrompt += `\n\n[Contexto emocional: El usuario parece sentirse ${emocionDetectada}. Responde con especial empatía y suavidad, validando sus sentimientos si es apropiado, incluso si no pide ayuda explícitamente.]`;
+    } else if (esEmocionPositiva(emocionDetectada)) {
+      finalSystemPrompt += `\n\n[Contexto emocional: El usuario parece sentirse ${emocionDetectada}. Comparte su entusiasmo o responde de manera cálida y acorde.]`;
+    }
+    // No se añade nada especial para EMOCIONES.NEUTRO u OTRO aquí, se maneja por defecto.
+  }
+
 
   // 4a. Internet Search Detection
   let needsInternetSearch = false;
@@ -205,6 +230,7 @@ export async function getWillyResponse(userMessageContent) {
       userId: MOCK_USER_ID,
       role: 'willy',
       message: willyResponseContent,
+      emotion: detectarEmocion(willyResponseContent) // También detectar emoción en respuesta de Willy
     });
   } catch (error) {
     console.error("[api/openai.js] Error guardando respuesta de Willy (standard) en Firestore:", error);
@@ -212,3 +238,10 @@ export async function getWillyResponse(userMessageContent) {
 
   return willyResponseContent;
 }
+
+// Helper para la lógica de activación de modo terapia por emoción negativa (usado arriba)
+const ACTIVAR_KEYWORDS = [
+  "modo terapia", "necesito hablar", "estoy triste", "me siento mal",
+  "estoy ansioso", "me siento ansiosa", "estoy deprimido", "estoy deprimida",
+  "no puedo más", "ayúdame", "necesito apoyo", "me siento abrumado", "me siento abrumada"
+];
