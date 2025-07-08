@@ -3,7 +3,10 @@ import { systemPrompt as baseSystemPrompt } from '../config/personalityPrompt.js
 import {
     guardarMensajeFirestore,
     buscarMensajesPorPalabraClave,
-    obtenerMensajesRecientes
+    obtenerMensajesRecientes,
+    generarResumenEmocional,
+    marcarComoMemorable, // Importar nueva función
+    obtenerMomentosMemorables // Importar nueva función
 } from '../services/firestoreService.js';
 import { fetchAndParseDDG } from '../lib/internet.js';
 import * as terapiaLogic from '../modules/modo_terapia/logica_modo_terapia.js';
@@ -35,35 +38,94 @@ export async function getWillyResponse(userMessageContent) {
   let willyResponseContent = "";
   let initialTherapyMessage = "";
 
-  // 1. Detect emotion in user's message
-  const emocionDetectada = detectarEmocion(userMessageContent); // Asumiendo que es síncrona por ahora
+  const emocionDetectada = detectarEmocion(userMessageContent);
   console.log(`[api/openai.js] Emoción detectada para mensaje de usuario: ${emocionDetectada}`);
 
-  // 2. Save user message to Firestore, now including the detected emotion
+  let userMessageId = null;
   try {
-    await guardarMensajeFirestore({
+    // GuardarMensajeFirestore ahora devuelve el ID del mensaje guardado.
+    userMessageId = await guardarMensajeFirestore({
       userId: MOCK_USER_ID,
       role: 'user',
       message: userMessageContent,
       emotion: emocionDetectada,
-      // topic, relevante can be added later
+      memorable: false // Por defecto no es memorable, se marca después si es necesario
     });
   } catch (error) {
     console.error("[api/openai.js] Error guardando mensaje de usuario en Firestore:", error);
   }
 
+  // --- Inicio Lógica de Anclajes Emocionales (Marcar) ---
+  const MARK_MEMORABLE_KEYWORDS = ["quiero que recuerdes esto", "esto fue importante", "guarda esto como un buen recuerdo", "anota esto", "recuerda bien esto"];
+  if (MARK_MEMORABLE_KEYWORDS.some(keyword => userMessageLower.includes(keyword))) {
+    if (userMessageId) { // Si tenemos el ID del mensaje del usuario que acaba de ser guardado
+      try {
+        await marcarComoMemorable(userMessageId);
+        // Preparamos una respuesta de confirmación y podríamos no necesitar llamar a OpenAI para esto.
+        willyResponseContent = terapiaContent.obtenerFraseAleatoria(terapiaContent.frasesValidacion) + // Reutilizar frases de validación para confirmación
+                               " Lo he guardado como un momento especial. Gracias por compartirlo conmigo.";
+        // Guardar esta respuesta de Willy también
+        await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'willy', message: willyResponseContent, emotion: EMOCIONES.CALMA });
+        return willyResponseContent;
+      } catch (error) {
+        console.error(`[api/openai.js] Error al marcar mensaje ${userMessageId} como memorable:`, error);
+        // Podríamos querer informar al usuario que no se pudo guardar.
+      }
+    } else {
+      // No se pudo obtener el ID del mensaje anterior para marcarlo.
+      // Willy podría decir: "Entendido. Lo tendré presente en nuestra conversación." (sin confirmación de guardado específico)
+    }
+  }
+  // --- Fin Lógica de Anclajes Emocionales (Marcar) ---
+
+
+  // --- Inicio Lógica de Anclajes Emocionales (Recuperar) ---
+  const RECALL_MEMORABLE_KEYWORDS = ["recuérdame algo bonito", "dime algo que me hizo sentir bien", "mis mejores momentos", "momento feliz", "buen recuerdo"];
+  if (RECALL_MEMORABLE_KEYWORDS.some(keyword => userMessageLower.includes(keyword))) {
+    const momentos = await obtenerMomentosMemorables(MOCK_USER_ID, 1); // Pedir 1 por ahora, el más reciente
+    if (momentos && momentos.length > 0) {
+      const momento = momentos[0]; // Tomar el primero (más reciente memorable)
+      // Formatear la respuesta
+      let textoMomento = `Recordé algo especial que compartimos el ${new Date(momento.timestamp.toDate()).toLocaleDateString()}:\n`;
+      if (momento.role === 'user') {
+        textoMomento += `Tú dijiste: "${momento.message}"`;
+      } else { // Willy's message
+        textoMomento += `Yo te dije: "${momento.message}"`;
+      }
+      if (momento.emotion && momento.emotion !== EMOCIONES.NEUTRO) {
+        textoMomento += `\n(Parece que en ese momento te sentías ${momento.emotion})`;
+      }
+      textoMomento += "\n\nEspero que este recuerdo te traiga una sonrisa. 😊";
+      willyResponseContent = textoMomento;
+      await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'willy', message: willyResponseContent, emotion: EMOCIONES.ALEGRIA });
+      return willyResponseContent;
+    } else {
+      willyResponseContent = "Busqué en nuestros momentos especiales guardados, pero no encontré uno específico ahora mismo. ¡Seguro crearemos muchos más juntos!";
+      await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'willy', message: willyResponseContent, emotion: EMOCIONES.ESPERANZA });
+      return willyResponseContent;
+    }
+  }
+  // --- Fin Lógica de Anclajes Emocionales (Recuperar) ---
+
+
   // 3. Therapy Mode Logic (check before standard operations)
-  // Note: initialTherapyMessage was already declared
   if (terapiaLogic.detectarDesactivacionTerapia(userMessageLower)) {
     initialTherapyMessage = terapiaLogic.desactivarModoTerapia();
     if (initialTherapyMessage) willyResponseContent = initialTherapyMessage;
   } else if (terapiaLogic.estaEnModoTerapia() || terapiaLogic.detectarNecesidadTerapia(userMessageLower) || (emocionDetectada && esEmocionNegativa(emocionDetectada) && !terapiaLogic.estaEnModoTerapia())) {
-    // Condición adicional: si se detecta emoción negativa fuerte y no está en modo terapia, puede activarse o responder con más cuidado.
-    // Por ahora, si detecta necesidad directa o ya está en modo, o si es emoción negativa (y no está en modo) -> entra en lógica de terapia.
     if (!terapiaLogic.estaEnModoTerapia()) {
-        // Si la activación es por emoción negativa detectada y no por keyword directa de "modo terapia"
         if (emocionDetectada && esEmocionNegativa(emocionDetectada) && !ACTIVAR_KEYWORDS.some(kw => userMessageLower.includes(kw))) {
-             initialTherapyMessage = terapiaLogic.activarModoTerapia() + `\nHe notado que quizás te sientes ${emocionDetectada}. Estoy aquí para escucharte.`;
+             // --- Inicio Integración Emocional (Sugerir Recuerdo Positivo) ---
+             const momentosPositivos = await obtenerMomentosMemorables(MOCK_USER_ID, 1); // Buscar si hay alguno
+             if (momentosPositivos && momentosPositivos.length > 0) {
+                initialTherapyMessage = terapiaLogic.activarModoTerapia() + `\nHe notado que quizás te sientes ${emocionDetectada}. Estoy aquí para escucharte. Por cierto, a veces recordar momentos bonitos ayuda un poco. ¿Te gustaría que te recuerde algo que te hizo sonreír?`;
+                // Aquí la lógica de `responderComoTerapia` debería manejar la respuesta a esta pregunta si el usuario dice "sí".
+                // Esto requeriría pasar un estado o una intención a `responderComoTerapia`.
+                // Por ahora, la sugerencia se hace, y si el usuario luego pide el recuerdo, la lógica de arriba lo manejará.
+             } else {
+                initialTherapyMessage = terapiaLogic.activarModoTerapia() + `\nHe notado que quizás te sientes ${emocionDetectada}. Estoy aquí para escucharte.`;
+             }
+             // --- Fin Integración Emocional ---
         } else {
             initialTherapyMessage = terapiaLogic.activarModoTerapia();
         }
@@ -84,7 +146,7 @@ export async function getWillyResponse(userMessageContent) {
     willyResponseContent = initialTherapyMessage ? initialTherapyMessage + "\n\n" + therapyResponse : therapyResponse;
 
     try {
-      await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'willy', message: willyResponseContent, emotion: detectarEmocion(willyResponseContent) }); // Willy también puede tener emociones en su respuesta
+      await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'willy', message: willyResponseContent, emotion: detectarEmocion(willyResponseContent) });
     } catch (error) {
       console.error("[api/openai.js] Error guardando respuesta de Willy (terapia) en Firestore:", error);
     }
@@ -93,80 +155,122 @@ export async function getWillyResponse(userMessageContent) {
     willyResponseContent = terapiaContent.obtenerFraseAleatoria(terapiaContent.frasesValidacion) +
                            " Parece que estás pasando por un momento difícil. Si necesitas un espacio más tranquilo para hablar de tus emociones, solo dime \"modo terapia\".";
     try {
-      await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'willy', message: willyResponseContent });
+      await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'willy', message: willyResponseContent, emotion: EMOCIONES.CALMA }); // Emoción de Willy al sugerir
     } catch (error) {
       console.error("[api/openai.js] Error guardando sugerencia de terapia en Firestore:", error);
     }
     return willyResponseContent;
   }
 
-  if (willyResponseContent) { // Si ya se generó una respuesta (ej. activación/desactivación de terapia)
+  if (willyResponseContent) {
     try {
-      await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'willy', message: willyResponseContent });
+      // Si willyResponseContent ya tiene valor (por ej. de marcar memorable, o desactivar terapia), se guarda y retorna.
+      await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'willy', message: willyResponseContent, emotion: detectarEmocion(willyResponseContent) });
     } catch (error) {
-      console.error("[api/openai.js] Error guardando mensaje inicial de terapia en Firestore:", error);
+      console.error("[api/openai.js] Error guardando mensaje de Willy (flujo temprano) en Firestore:", error);
     }
     return willyResponseContent;
   }
 
-  // 4. Standard Operation: Internet Search or Memory Recall or General Chat
+  // 4. Standard Operation: Internet Search, Memory Recall, Emotional Summary, or General Chat
   let memoryContext = "";
   let internetContext = "";
-  let finalSystemPrompt = baseSystemPrompt; // Inicia con el prompt base
+  let finalSystemPrompt = baseSystemPrompt;
+  let isEmotionalSummaryRequest = false;
 
-  // Modificación del system prompt si se detecta emoción y no está en modo terapia explícito
   if (emocionDetectada && emocionDetectada !== EMOCIONES.NEUTRO && !terapiaLogic.estaEnModoTerapia()) {
     if (esEmocionNegativa(emocionDetectada)) {
       finalSystemPrompt += `\n\n[Contexto emocional: El usuario parece sentirse ${emocionDetectada}. Responde con especial empatía y suavidad, validando sus sentimientos si es apropiado, incluso si no pide ayuda explícitamente.]`;
     } else if (esEmocionPositiva(emocionDetectada)) {
       finalSystemPrompt += `\n\n[Contexto emocional: El usuario parece sentirse ${emocionDetectada}. Comparte su entusiasmo o responde de manera cálida y acorde.]`;
     }
-    // No se añade nada especial para EMOCIONES.NEUTRO u OTRO aquí, se maneja por defecto.
   }
 
+  const SUMMARY_KEYWORDS = ["cómo he estado", "resumen emocional", "emociones he sentido", "estado emocional", "mis emociones últimamente"];
+  if (SUMMARY_KEYWORDS.some(keyword => userMessageLower.includes(keyword))) {
+    isEmotionalSummaryRequest = true;
+    console.log("[api/openai.js] Solicitud de resumen emocional detectada.");
 
-  // 4a. Internet Search Detection
-  let needsInternetSearch = false;
-  let internetQuery = "";
-  for (const keyword of INTERNET_SEARCH_KEYWORDS) {
-    if (userMessageLower.includes(keyword)) {
-      needsInternetSearch = true;
-      let queryCandidate = userMessageContent.substring(userMessageLower.indexOf(keyword) + keyword.length).trim();
-      for (const stopWord of INTERNET_QUERY_STOP_WORDS) {
-        if (queryCandidate.toLowerCase().startsWith(stopWord)) {
-          queryCandidate = queryCandidate.substring(stopWord.length).trim();
+    let fechaInicio, fechaFin;
+    if (userMessageLower.includes("última semana") || userMessageLower.includes("esta semana")) {
+      fechaFin = new Date();
+      fechaInicio = new Date();
+      fechaInicio.setDate(fechaFin.getDate() - 6);
+      fechaInicio.setHours(0,0,0,0);
+    } else if (userMessageLower.includes("último mes")) {
+      fechaFin = new Date();
+      fechaInicio = new Date();
+      fechaInicio.setMonth(fechaFin.getMonth() - 1);
+      fechaInicio.setHours(0,0,0,0);
+    }
+
+    const resumenTexto = await generarResumenEmocional(MOCK_USER_ID, fechaInicio, fechaFin);
+
+    const systemPromptForSummary = baseSystemPrompt +
+        `\n\n[Instrucción especial: El usuario ha pedido un resumen de su estado emocional. Aquí tienes los datos: "${resumenTexto}". Por favor, preséntale esta información de una manera cálida, reflexiva y humana. Puedes ofrecer una perspectiva gentil o una pregunta abierta sobre cómo se siente al ver este resumen. No inventes datos, solo usa la información proporcionada.]`;
+
+    const recentMessagesForSummary = (await obtenerMensajesRecientes(MOCK_USER_ID, 5)).map(msg => ({
+        role: msg.role === 'willy' ? 'assistant' : 'user',
+        content: msg.message
+    }));
+
+    const messagesForAPISummary = [
+        { role: 'system', content: systemPromptForSummary },
+        ...recentMessagesForSummary,
+        { role: 'user', content: userMessageContent }
+    ];
+
+    try {
+        const response = await axios.post('https://api.openai.com/v1/chat/completions', {
+            model: 'gpt-4o', messages: messagesForAPISummary, temperature: 0.7, max_tokens: 1000,
+        }, { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' }});
+        willyResponseContent = response.data.choices[0].message.content;
+    } catch (error) {
+        console.error('Error al obtener respuesta de Willy (resumen emocional):', error.response ? error.response.data : error.message);
+        willyResponseContent = "Pude generar tu resumen emocional, pero tuve un pequeño problema al intentar expresarlo de forma natural. Aquí están los datos directamente:\n" + resumenTexto;
+    }
+  }
+
+  if (!isEmotionalSummaryRequest) {
+    let needsInternetSearch = false;
+    let internetQuery = "";
+    for (const keyword of INTERNET_SEARCH_KEYWORDS) {
+      if (userMessageLower.includes(keyword)) {
+        needsInternetSearch = true;
+        let queryCandidate = userMessageContent.substring(userMessageLower.indexOf(keyword) + keyword.length).trim();
+        for (const stopWord of INTERNET_QUERY_STOP_WORDS) {
+          if (queryCandidate.toLowerCase().startsWith(stopWord)) {
+            queryCandidate = queryCandidate.substring(stopWord.length).trim();
+          }
         }
+        internetQuery = queryCandidate;
+        if (internetQuery.endsWith("?")) internetQuery = internetQuery.slice(0, -1);
+        break;
       }
-      internetQuery = queryCandidate;
-      if (internetQuery.endsWith("?")) internetQuery = internetQuery.slice(0, -1);
-      break;
+    }
+
+    if (needsInternetSearch && internetQuery) {
+      console.log(`[api/openai.js] Internet search needed for query: "${internetQuery}"`);
+      if (viewTextWebsiteTool) {
+        internetContext = await fetchAndParseDDG(internetQuery, viewTextWebsiteTool);
+      } else {
+        console.warn("[api/openai.js] viewTextWebsiteTool not available. Internet search will be mocked.");
+        internetContext = await fetchAndParseDDG(internetQuery, null);
+      }
+      finalSystemPrompt += "\n\n--- Información relevante de internet ---\n" + internetContext;
     }
   }
 
-  if (needsInternetSearch && internetQuery) {
-    console.log(`[api/openai.js] Internet search needed for query: "${internetQuery}"`);
-    if (viewTextWebsiteTool) {
-      internetContext = await fetchAndParseDDG(internetQuery, viewTextWebsiteTool);
-    } else {
-      console.warn("[api/openai.js] viewTextWebsiteTool not available. Internet search will be mocked.");
-      internetContext = await fetchAndParseDDG(internetQuery, null);
-    }
-    finalSystemPrompt += "\n\n--- Información relevante de internet ---\n" + internetContext;
-  }
-
-  // 4b. Memory Recall Detection (if not an internet search)
-  if (!needsInternetSearch) {
+  if (!isEmotionalSummaryRequest && !internetContext) {
     const wantsToRecall = RECALL_KEYWORDS.some(keyword => userMessageLower.includes(keyword));
     if (wantsToRecall) {
       let searchTerm = "";
-      // Check for "lo último que hablamos"
       if (userMessageLower.includes("lo último que hablamos")) {
-          // No specific search term, handled by recent messages context
       } else {
         const aboutMatch = userMessageLower.match(/sobre ([\wáéíóúñ]+)/i);
         if (aboutMatch && aboutMatch[1]) searchTerm = aboutMatch[1];
         else {
-          const words = userMessageLower.split(' ').filter(word => !RECALL_KEYWORDS.join(' ').includes(word) && word.length > 2); // simple filter
+          const words = userMessageLower.split(' ').filter(word => !RECALL_KEYWORDS.join(' ').includes(word) && word.length > 2);
           if (words.length > 0) searchTerm = words[words.length - 1];
         }
       }
@@ -175,7 +279,7 @@ export async function getWillyResponse(userMessageContent) {
         const relevantMessagesRaw = await buscarMensajesPorPalabraClave(MOCK_USER_ID, searchTerm);
         if (relevantMessagesRaw.length > 0) {
           memoryContext = "Para tu referencia, anteriormente hablamos de esto:\n";
-          relevantMessagesRaw.slice(-3).forEach(msg => { // Tomar los 3 más recientes de los encontrados
+          relevantMessagesRaw.slice(-3).forEach(msg => {
             const date = msg.timestamp && msg.timestamp.toDate ? msg.timestamp.toDate().toLocaleDateString() : 'una fecha anterior';
             memoryContext += `- (${msg.role === 'user' ? 'Tú' : 'Yo'} el ${date}): "${msg.message}"\n`;
           });
@@ -183,7 +287,7 @@ export async function getWillyResponse(userMessageContent) {
           memoryContext = `Busqué en mi memoria sobre "${searchTerm}", pero no encontré algo específico. ¿Podrías recordarme un poco más?\n`;
         }
       } else if (userMessageLower.includes("lo último que hablamos")) {
-          memoryContext = "Revisando nuestras últimas conversaciones...\n"; // El historial ya provee esto.
+        memoryContext = "Revisando nuestras últimas conversaciones...\n";
       } else {
         memoryContext = "Parece que quieres que recuerde algo. ¿Podrías darme más detalles o una palabra clave?\n";
       }
@@ -191,40 +295,39 @@ export async function getWillyResponse(userMessageContent) {
     }
   }
 
-  // 5. Prepare messages for OpenAI API using Firestore
-  const recentMessagesRaw = await obtenerMensajesRecientes(MOCK_USER_ID, 10); // Incluye el mensaje actual del usuario
-  const recentMessagesForAPI = recentMessagesRaw.map(msg => ({
-    role: msg.role === 'willy' ? 'assistant' : msg.role,
-    content: msg.message
-  }));
+  if (!willyResponseContent) {
+    const recentMessagesRaw = await obtenerMensajesRecientes(MOCK_USER_ID, 10);
+    const recentMessagesForAPI = recentMessagesRaw.map(msg => ({
+      role: msg.role === 'willy' ? 'assistant' : msg.role,
+      content: msg.message
+    }));
 
-  const messagesForAPI = [
-    { role: 'system', content: finalSystemPrompt },
-    ...recentMessagesForAPI,
-  ];
+    const messagesForAPI = [
+      { role: 'system', content: finalSystemPrompt },
+      ...recentMessagesForAPI,
+    ];
 
-  console.log("[api/openai.js] Messages for API (standard):", JSON.stringify(messagesForAPI, null, 2));
+    console.log("[api/openai.js] Messages for API (standard):", JSON.stringify(messagesForAPI, null, 2));
 
-  try {
-    const response = await axios.post(
-      'https://api.openai.com/v1/chat/completions',
-      {
-        model: 'gpt-4o',
-        messages: messagesForAPI,
-        temperature: 0.7,
-        max_tokens: 1000,
-      },
-      {
-        headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' }
-      }
-    );
-    willyResponseContent = response.data.choices[0].message.content;
-  } catch (error) {
-    console.error('Error al obtener respuesta de Willy (standard):', error.response ? error.response.data : error.message);
-    willyResponseContent = "Lo siento... hubo un problema técnico al intentar generar una respuesta. ¿Podemos intentarlo de nuevo?";
+    try {
+      const response = await axios.post(
+        'https://api.openai.com/v1/chat/completions',
+        {
+          model: 'gpt-4o',
+          messages: messagesForAPI,
+          temperature: 0.7,
+          max_tokens: 1000,
+        },
+        {
+          headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' }
+        }
+      );
+      willyResponseContent = response.data.choices[0].message.content;
+    } catch (error) {
+      console.error('Error al obtener respuesta de Willy (standard):', error.response ? error.response.data : error.message);
+      willyResponseContent = "Lo siento... hubo un problema técnico al intentar generar una respuesta. ¿Podemos intentarlo de nuevo?";
+    }
   }
-
-  // 6. Save Willy's final response to Firestore
   try {
     await guardarMensajeFirestore({
       userId: MOCK_USER_ID,

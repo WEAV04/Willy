@@ -4,6 +4,8 @@ import {
   getFirestore,
   collection,
   addDoc,
+  doc, // Import doc
+  updateDoc, // Import updateDoc
   query,
   where,
   orderBy,
@@ -39,7 +41,8 @@ export async function guardarMensajeFirestore(data) {
       timestamp: Timestamp.fromDate(new Date()), // Usar Firestore Timestamp
       topic: data.topic || null,
       emotion: data.emotion || null,
-      relevante: data.relevante || false,
+      relevante: data.relevante || false, // Mantener 'relevante' por si se usa para otra cosa
+      memorable: data.memorable || false, // Nuevo campo 'memorable'
     };
     const docRef = await addDoc(collection(db, MESSAGES_COLLECTION), messageData);
     console.log("[FirestoreService] Mensaje guardado con ID: ", docRef.id);
@@ -87,6 +90,193 @@ export async function buscarMensajesPorPalabraClave(userId, keyword) {
     return messages; // Devolver los mensajes que coinciden localmente
   } catch (error) {
     console.error("[FirestoreService] Error al buscar mensajes por palabra clave: ", error);
+    throw error;
+  }
+}
+
+/**
+ * Marca un mensaje como memorable en Firestore.
+ * @param {string} mensajeId - El ID del documento del mensaje a marcar.
+ * @returns {Promise<void>}
+ */
+export async function marcarComoMemorable(mensajeId) {
+  try {
+    if (!mensajeId) {
+      throw new Error("Se requiere mensajeId para marcar como memorable.");
+    }
+    const messageRef = doc(db, MESSAGES_COLLECTION, mensajeId);
+    await updateDoc(messageRef, {
+      memorable: true
+    });
+    console.log(`[FirestoreService] Mensaje ${mensajeId} marcado como memorable.`);
+  } catch (error) {
+    console.error(`[FirestoreService] Error al marcar mensaje ${mensajeId} como memorable: `, error);
+    throw error;
+  }
+}
+
+/**
+ * Obtiene mensajes marcados como memorables para un usuario.
+ * @param {string} userId - ID del usuario.
+ * @param {number} [cantidad] - Número opcional de mensajes a obtener.
+ * @returns {Promise<object[]>} Un array de objetos de mensaje memorables.
+ */
+export async function obtenerMomentosMemorables(userId, cantidad) {
+  try {
+    const constraints = [
+      where("userId", "==", userId),
+      where("memorable", "==", true),
+      orderBy("timestamp", "desc") // Los más recientes primero, o podría ser aleatorio
+    ];
+
+    if (cantidad && typeof cantidad === 'number' && cantidad > 0) {
+      constraints.push(limit(cantidad));
+    }
+
+    const q = query(collection(db, MESSAGES_COLLECTION), ...constraints);
+    const querySnapshot = await getDocs(q);
+    const messages = [];
+    querySnapshot.forEach((doc) => {
+      messages.push({ id: doc.id, ...doc.data() });
+    });
+    console.log(`[FirestoreService] Encontrados ${messages.length} momentos memorables.`);
+    // Si se quiere uno aleatorio de los encontrados (si cantidad no se especificó o es > 1)
+    // if (messages.length > 0 && !cantidad) {
+    //   return [messages[Math.floor(Math.random() * messages.length)]];
+    // }
+    return messages; // Devuelve los encontrados, ordenados por fecha (o el límite especificado)
+  } catch (error) {
+    console.error("[FirestoreService] Error al obtener momentos memorables: ", error);
+    throw error;
+  }
+}
+
+/**
+ * Obtiene todos los mensajes de un usuario, opcionalmente dentro de un rango de fechas.
+ * @param {string} userId - ID del usuario.
+ * @param {Date} [fechaInicio] - Fecha de inicio del rango (opcional).
+ * @param {Date} [fechaFin] - Fecha de fin del rango (opcional).
+ * @returns {Promise<object[]>} Un array de objetos de mensaje.
+ */
+export async function obtenerMensajesPorRangoFecha(userId, fechaInicio, fechaFin) {
+  try {
+    let q;
+    const constraints = [
+      where("userId", "==", userId),
+      orderBy("timestamp", "asc") // Procesar en orden cronológico
+    ];
+
+    if (fechaInicio) {
+      constraints.push(where("timestamp", ">=", Timestamp.fromDate(fechaInicio)));
+    }
+    if (fechaFin) {
+      // Para que la fecha fin sea inclusiva, ajustamos al final del día.
+      const finDeDia = new Date(fechaFin);
+      finDeDia.setHours(23, 59, 59, 999);
+      constraints.push(where("timestamp", "<=", Timestamp.fromDate(finDeDia)));
+    }
+
+    q = query(collection(db, MESSAGES_COLLECTION), ...constraints);
+
+    const querySnapshot = await getDocs(q);
+    const messages = [];
+    querySnapshot.forEach((doc) => {
+      messages.push({ id: doc.id, ...doc.data() });
+    });
+    console.log(`[FirestoreService] Obtenidos ${messages.length} mensajes para el rango especificado.`);
+    return messages;
+  } catch (error) {
+    console.error("[FirestoreService] Error al obtener mensajes por rango de fecha: ", error);
+    throw error;
+  }
+}
+
+/**
+ * Genera un resumen emocional basado en los mensajes de un usuario.
+ * @param {string} userId - ID del usuario.
+ * @param {Date} [fechaInicio] - Fecha de inicio del rango (opcional).
+ * @param {Date} [fechaFin] - Fecha de fin del rango (opcional).
+ * @returns {Promise<string>} Un string con el resumen emocional.
+ */
+export async function generarResumenEmocional(userId, fechaInicio, fechaFin) {
+  try {
+    const messages = await obtenerMensajesPorRangoFecha(userId, fechaInicio, fechaFin);
+    if (messages.length === 0) {
+      return "No encontré mensajes tuyos en el período especificado para generar un resumen emocional.";
+    }
+
+    const emocionCounts = {};
+    const temasRelevantesPorEmocion = {}; // Para la parte opcional de temas
+    let mensajesRelevantesCount = 0;
+
+    messages.forEach(msg => {
+      if (msg.emotion && msg.emotion !== 'neutro' && msg.emotion !== 'otro') { // Excluir neutro/otro del conteo principal
+        emocionCounts[msg.emotion] = (emocionCounts[msg.emotion] || 0) + 1;
+
+        // Para la parte opcional de temas (requiere que 'topic' se guarde)
+        if (msg.topic && msg.topic.trim() !== "") {
+          if (!temasRelevantesPorEmocion[msg.emotion]) {
+            temasRelevantesPorEmocion[msg.emotion] = {};
+          }
+          temasRelevantesPorEmocion[msg.emotion][msg.topic] = (temasRelevantesPorEmocion[msg.emotion][msg.topic] || 0) + 1;
+        }
+      }
+      if (msg.relevante === true) {
+        mensajesRelevantesCount++;
+      }
+    });
+
+    const sortedEmociones = Object.entries(emocionCounts).sort(([, a], [, b]) => b - a);
+
+    let resumen = "";
+    if (fechaInicio && fechaFin) {
+      const diffTime = Math.abs(fechaFin - fechaInicio);
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) +1; // +1 para incluir ambos días
+      resumen += `En los últimos ${diffDays} día(s) (desde ${fechaInicio.toLocaleDateString()} hasta ${fechaFin.toLocaleDateString()}), `;
+    } else if (fechaInicio) {
+       resumen += `Desde ${fechaInicio.toLocaleDateString()}, `;
+    } else {
+      // Podríamos calcular el rango si solo se da fechaFin o si no se da ninguna (ej. "histórico")
+      // Por ahora, si no hay rango, decimos "En general" o calculamos desde el primer mensaje.
+      // Para simplificar, si no hay rango, no especificamos el período de forma detallada.
+      resumen += "Analizando tus emociones registradas, ";
+    }
+
+    if (sortedEmociones.length > 0) {
+      resumen += "tus emociones más frecuentes han sido: ";
+      resumen += sortedEmociones.slice(0, 3).map(([em, count]) => `${em} (${count} ${count > 1 ? 'veces' : 'vez'})`).join(', ');
+      resumen += ".";
+
+      // Opcional: Detalle de temas por emoción (muy básico)
+      // Esto podría ser muy verboso, se necesitaría una forma más inteligente de resumirlo.
+      /*
+      if (Object.keys(temasRelevantesPorEmocion).length > 0) {
+        resumen += "\nAlgunas observaciones sobre temas y emociones:\n";
+        for (const emocion of sortedEmociones.slice(0,2).map(e=>e[0])) { // Solo para las 2 emociones top
+            if (temasRelevantesPorEmocion[emocion]) {
+                const topTema = Object.entries(temasRelevantesPorEmocion[emocion]).sort(([,a],[,b])=>b-a)[0];
+                if (topTema) {
+                    resumen += `- Cuando te sentiste ${emocion}, a menudo hablabas sobre "${topTema[0]}".\n`;
+                }
+            }
+        }
+      }
+      */
+
+    } else {
+      resumen += "no he detectado un patrón claro de emociones específicas (aparte de neutras) en tus mensajes.";
+    }
+
+    if (mensajesRelevantesCount > 0) {
+      resumen += ` También registré ${mensajesRelevantesCount} momento(s) que marcaste como relevante(s).`;
+      // Podríamos añadir una forma de consultar estos mensajes relevantes específicamente.
+    }
+
+    console.log("[FirestoreService] Resumen emocional generado:", resumen);
+    return resumen;
+
+  } catch (error) {
+    console.error("[FirestoreService] Error al generar resumen emocional: ", error);
     throw error;
   }
 }
