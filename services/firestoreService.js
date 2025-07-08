@@ -95,6 +95,111 @@ export async function buscarMensajesPorPalabraClave(userId, keyword) {
 }
 
 /**
+ * Prepara datos para un gráfico de barras de emociones por tema.
+ * @param {string} userId - ID del usuario.
+ * @param {number} [numTopics=5] - Número de temas más frecuentes a considerar.
+ * @returns {Promise<object>} Objeto con estructura para Chart.js: { labels: [topic1,...], datasets: [{label:emotion1, data:[...]},...] }
+ */
+export async function obtenerDatosEmocionesPorTemaParaGrafico(userId, numTopics = 5) {
+  try {
+    const correlaciones = await obtenerCorrelacionTemaEmocion(userId);
+    if (!correlaciones || correlaciones.length === 0) {
+      return { labels: [], datasets: [] };
+    }
+
+    // Agrupar por tema y luego por emoción para facilitar la creación de datasets
+    const temaData = {};
+    correlaciones.forEach(corr => {
+      if (!temaData[corr.tema]) {
+        temaData[corr.tema] = {};
+      }
+      temaData[corr.tema][corr.emocion] = corr.frecuencia;
+    });
+
+    // Seleccionar los N temas más frecuentes (basado en la suma de frecuencias de todas sus emociones)
+    const temasConFrecuenciaTotal = Object.keys(temaData).map(tema => {
+      const totalFrecuenciaTema = Object.values(temaData[tema]).reduce((sum, count) => sum + count, 0);
+      return { tema, totalFrecuenciaTema, emociones: temaData[tema] };
+    }).sort((a, b) => b.totalFrecuenciaTema - a.totalFrecuenciaTema);
+
+    const topTemas = temasConFrecuenciaTotal.slice(0, numTopics);
+    const labels = topTemas.map(t => t.tema); // Eje X: Nombres de los temas
+
+    // Identificar todas las emociones únicas presentes en los temas top para crear los datasets
+    const uniqueEmotions = new Set();
+    topTemas.forEach(t => {
+      Object.keys(t.emociones).forEach(em => uniqueEmotions.add(em));
+    });
+
+    const datasets = [];
+    // Colores base para los gráficos
+    const colores = ['rgb(255, 99, 132)', 'rgb(54, 162, 235)', 'rgb(255, 206, 86)', 'rgb(75, 192, 192)', 'rgb(153, 102, 255)', 'rgb(255, 159, 64)'];
+
+    Array.from(uniqueEmotions).forEach((emocion, index) => {
+      const data = labels.map(temaLabel => {
+        const temaEncontrado = topTemas.find(t => t.tema === temaLabel);
+        return temaEncontrado && temaEncontrado.emociones[emocion] ? temaEncontrado.emociones[emocion] : 0;
+      });
+      datasets.push({
+        label: emocion.charAt(0).toUpperCase() + emocion.slice(1),
+        data: data,
+        backgroundColor: colores[index % colores.length],
+      });
+    });
+
+    console.log("[FirestoreService] Datos para gráfico Emociones por Tema:", { labels, datasets });
+    return { labels, datasets };
+
+  } catch (error) {
+    console.error("[FirestoreService] Error al obtener datos para gráfico Emociones por Tema:", error);
+    throw error;
+  }
+}
+
+/**
+ * Prepara datos para un heatmap de emociones por día de la semana.
+ * @param {string} userId - ID del usuario.
+ * @returns {Promise<object>} Objeto con estructura para heatmap.
+ *                            Ej: { days: ['Lun',...], emotions: ['Ansiedad',...], data: [[val,...],...] }
+ */
+export async function obtenerDatosHeatmapSemanalParaGrafico(userId) {
+  try {
+    const patrones = await obtenerPatronesEmocionalesPorDiaSemana(userId);
+    if (Object.keys(patrones).length === 0) {
+      return { days: [], emotions: [], data: [] }; // O una estructura vacía adecuada para la lib de heatmap
+    }
+
+    const nombresDiasOrdenados = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
+    const uniqueEmotions = new Set();
+    nombresDiasOrdenados.forEach(dia => {
+      if (patrones[dia]) {
+        Object.keys(patrones[dia]).forEach(em => uniqueEmotions.add(em));
+      }
+    });
+    const emotionsLabels = Array.from(uniqueEmotions).sort(); // Ordenar alfabéticamente para consistencia
+
+    // Crear la matriz de datos para el heatmap: data[emotionIndex][dayIndex] = value
+    const heatmapData = emotionsLabels.map(emocion => {
+      return nombresDiasOrdenados.map(dia => {
+        return patrones[dia] && patrones[dia][emocion] ? patrones[dia][emocion] : 0;
+      });
+    });
+
+    const result = {
+      days: nombresDiasOrdenados.map(d => d.substring(0,3)), // Abreviar días para labels
+      emotions: emotionsLabels.map(e => e.charAt(0).toUpperCase() + e.slice(1)),
+      data: heatmapData
+    };
+    console.log("[FirestoreService] Datos para Heatmap Semanal:", result);
+    return result;
+
+  } catch (error) {
+    console.error("[FirestoreService] Error al obtener datos para Heatmap Semanal:", error);
+    throw error;
+  }
+}
+
+/**
  * Calcula el balance emocional (positivas, negativas, neutras) para un usuario en un rango de fechas.
  * @param {string} userId - ID del usuario.
  * @param {Date} [fechaInicio] - Fecha de inicio del rango (opcional).

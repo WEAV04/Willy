@@ -38,7 +38,7 @@ export function setViewTextWebsiteTool(tool) {
   console.log("[api/openai.js] viewTextWebsiteTool has been set.");
 }
 
-export async function getWillyResponse(userMessageContent) {
+export async function getWillyResponse(userMessageContent, overrideSystemPrompt = null) {
   const userMessageLower = userMessageContent.toLowerCase();
   let willyResponseContent = "";
   let initialTherapyMessage = "";
@@ -180,15 +180,19 @@ export async function getWillyResponse(userMessageContent) {
   // 4. Standard Operation: Internet Search, Memory Recall, Emotional Summary, Evolution, Predictive Chat, Mirror Conversation or Chart Request
   let memoryContext = "";
   let internetContext = "";
-  let finalSystemPrompt = baseSystemPrompt;
+  // Use overrideSystemPrompt if provided, otherwise build it step-by-step
+  let finalSystemPrompt = overrideSystemPrompt || baseSystemPrompt;
   let isSpecialRequestHandled = false; // Flag to check if a special request was handled
   let chartTriggerData = null; // To hold data if a chart needs to be triggered
 
-  if (emocionDetectada && emocionDetectada !== EMOCIONES.NEUTRO && !terapiaLogic.estaEnModoTerapia()) {
-    if (esEmocionNegativa(emocionDetectada)) {
-      finalSystemPrompt += `\n\n[Contexto emocional: El usuario parece sentirse ${emocionDetectada}. Responde con especial empatía y suavidad, validando sus sentimientos si es apropiado, incluso si no pide ayuda explícitamente.]`;
-    } else if (esEmocionPositiva(emocionDetectada)) {
-      finalSystemPrompt += `\n\n[Contexto emocional: El usuario parece sentirse ${emocionDetectada}. Comparte su entusiasmo o responde de manera cálida y acorde.]`;
+  // Only add default contexts if not using an overrideSystemPrompt
+  if (!overrideSystemPrompt) {
+    if (emocionDetectada && emocionDetectada !== EMOCIONES.NEUTRO && !terapiaLogic.estaEnModoTerapia()) {
+      if (esEmocionNegativa(emocionDetectada)) {
+        finalSystemPrompt += `\n\n[Contexto emocional: El usuario parece sentirse ${emocionDetectada}. Responde con especial empatía y suavidad, validando sus sentimientos si es apropiado, incluso si no pide ayuda explícitamente.]`;
+      } else if (esEmocionPositiva(emocionDetectada)) {
+        finalSystemPrompt += `\n\n[Contexto emocional: El usuario parece sentirse ${emocionDetectada}. Comparte su entusiasmo o responde de manera cálida y acorde.]`;
+      }
     }
   }
 
@@ -434,7 +438,7 @@ export async function getWillyResponse(userMessageContent) {
   }
 
   // 4f. Internet Search Detection
-  if (!isSpecialRequestHandled) {
+  if (!isSpecialRequestHandled && !overrideSystemPrompt) { // Don't add internet context if using override
     let needsInternetSearch = false;
     let internetQuery = "";
     for (const keyword of INTERNET_SEARCH_KEYWORDS) {
@@ -459,7 +463,7 @@ export async function getWillyResponse(userMessageContent) {
   }
 
   // 4g. Memory Recall Detection
-  if (!isSpecialRequestHandled) {
+  if (!isSpecialRequestHandled && !overrideSystemPrompt) { // Don't add memory context if using override
     const wantsToRecall = RECALL_KEYWORDS.some(keyword => userMessageLower.includes(keyword));
     if (wantsToRecall) {
       isSpecialRequestHandled = true;
@@ -490,7 +494,7 @@ export async function getWillyResponse(userMessageContent) {
 
   // 5. OpenAI API call if no direct response yet
   if (!willyResponseContent) {
-    const recentMessagesRaw = await obtenerMensajesRecientes(MOCK_USER_ID, 10);
+    const recentMessagesRaw = await obtenerMensajesRecientes(MOCK_USER_ID, overrideSystemPrompt ? 3 : 10); // Less history if override prompt is detailed
     const recentMessagesForAPI = recentMessagesRaw.map(msg => ({
       role: msg.role === 'willy' ? 'assistant' : msg.role,
       content: msg.message
