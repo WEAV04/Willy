@@ -175,11 +175,12 @@ export async function getWillyResponse(userMessageContent) {
     return willyResponseContent;
   }
 
-  // 4. Standard Operation: Internet Search, Memory Recall, Emotional Summary, Evolution, Predictive Chat, or Mirror Conversation
+  // 4. Standard Operation: Internet Search, Memory Recall, Emotional Summary, Evolution, Predictive Chat, Mirror Conversation or Chart Request
   let memoryContext = "";
   let internetContext = "";
   let finalSystemPrompt = baseSystemPrompt;
-  let isSpecialRequestHandled = false;
+  let isSpecialRequestHandled = false; // Flag to check if a special request was handled
+  let chartTriggerData = null; // To hold data if a chart needs to be triggered
 
   if (emocionDetectada && emocionDetectada !== EMOCIONES.NEUTRO && !terapiaLogic.estaEnModoTerapia()) {
     if (esEmocionNegativa(emocionDetectada)) {
@@ -189,50 +190,81 @@ export async function getWillyResponse(userMessageContent) {
     }
   }
 
-  // Order of Special Operations: Mirror -> Predictive -> Evolution -> Summary -> Internet -> Recall
+  // Order of Special Operations: Chart Request -> Mirror -> Predictive -> Evolution -> Summary -> Internet -> Recall
 
-  // 4a. Mirror Conversation Request
-  const MIRROR_KEYWORDS = ["cosas importantes te he dicho", "espejo emocional", "mis pensamientos más profundos", "reflexionar sobre lo que he dicho"];
-  if (!isSpecialRequestHandled && MIRROR_KEYWORDS.some(keyword => userMessageLower.includes(keyword))) {
-    isSpecialRequestHandled = true;
-    console.log("[api/openai.js] Solicitud de Conversación Espejo detectada.");
-    // Default to last 15 days, 5 messages, no specific emotion filter for Phase 1
-    const fechaFinEspejo = new Date();
-    const fechaInicioEspejo = new Date();
-    fechaInicioEspejo.setDate(fechaFinEspejo.getDate() - 14); // Approx last 15 days
+  // 4a. Chart Request Detection
+  const CHART_KEYWORDS = ["muéstrame un gráfico", "visualizar mis emociones", "gráfico de evolución", "gráfico semanal", "gráfico mensual"];
+  if (!isSpecialRequestHandled && CHART_KEYWORDS.some(keyword => userMessageLower.includes(keyword))) {
+    isSpecialRequestHandled = true; // Mark as handled
+    console.log("[api/openai.js] Solicitud de gráfico detectada.");
 
-    const mensajesEspejo = await generarConversacionEspejo(MOCK_USER_ID, { fechaInicio: fechaInicioEspejo, fechaFin: fechaFinEspejo }, null, 5);
+    let chartPeriod = 'semanal'; // Default
+    let numChartPeriods = 4; // Default
+    if (userMessageLower.includes("mensual")) chartPeriod = 'mensual';
+    else if (userMessageLower.includes("diario")) chartPeriod = 'diario';
 
-    if (mensajesEspejo && mensajesEspejo.length > 0) {
-      const systemPromptForMirror = baseSystemPrompt +
-        `\n\n[Instrucción especial: El usuario ha pedido una 'conversación espejo'. Aquí tienes una selección de sus mensajes/ideas clave recientes: ${JSON.stringify(mensajesEspejo)}. ` +
-        `Tu tarea es actuar como un espejo emocional: ` +
-        `1. Presenta estos mensajes o sus ideas clave de una manera lógica y conectada. ` +
-        `2. Destaca los posibles altibajos emocionales, patrones, o incluso aparentes contradicciones, pero siempre con profunda compasión y sin juzgar. ` +
-        `3. Valida las emociones expresadas. ` +
-        `4. Ayuda al usuario a verse a sí mismo con más claridad y amabilidad, fomentando el autoconocimiento. ` +
-        `5. Puedes concluir con una reflexión gentil o una pregunta abierta que invite a una mayor introspección. Evita dar consejos, enfócate en reflejar y validar.]`;
+    if (userMessageLower.includes("últimas 8 semanas")) numChartPeriods = 8;
+    else if (userMessageLower.includes("últimos 6 meses")) numChartPeriods = 6;
 
-      // For mirror conversation, we might not need much recent chat history, as the focus is on the selected past messages.
-      const messagesForAPIMirror = [
-          { role: 'system', content: systemPromptForMirror },
-          { role: 'user', content: userMessageContent } // The user's request for the mirror
-      ];
-      try {
-          const response = await axios.post('https://api.openai.com/v1/chat/completions', {
-              model: 'gpt-4o', messages: messagesForAPIMirror, temperature: 0.7, max_tokens: 1000,
-          }, { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' }});
-          willyResponseContent = response.data.choices[0].message.content;
-      } catch (error) {
-          console.error('Error al obtener respuesta de Willy (conversación espejo):', error.response ? error.response.data : error.message);
-          willyResponseContent = "Intenté reflexionar sobre tus mensajes recientes, pero tuve un pequeño problema. ¿Podríamos intentarlo de nuevo o quizás hablar de algo más específico?";
+    // This response from Willy is a placeholder.
+    // The actual chart rendering would happen on the frontend.
+    // The frontend would see this `action` and know to trigger the chart display.
+    willyResponseContent = `Entendido. Estoy preparando la información para tu gráfico de evolución emocional ${chartPeriod}. En un momento deberías poder verlo.`;
+
+    // We need a way to communicate to the frontend that a chart should be displayed.
+    // This could be by returning a special object or by the frontend also parsing Willy's text.
+    // For now, we'll just set a flag/data that the main function can return.
+    // This part is conceptual for how a full-stack app might handle it.
+    // In this environment, Willy just says he'll show it.
+    chartTriggerData = {
+        action: "display_chart",
+        chartType: "emotional_evolution_time_series",
+        params: {
+            userId: MOCK_USER_ID,
+            period: chartPeriod,
+            numPeriods: numChartPeriods
+        },
+        messageForUser: willyResponseContent
+    };
+    // For now, we'll just return the text part. The calling environment (if it's a UI)
+    // would need to interpret this or have a more structured way to get `chartTriggerData`.
+  }
+
+  // 4b. Mirror Conversation Request
+  if (!isSpecialRequestHandled) {
+    const MIRROR_KEYWORDS = ["cosas importantes te he dicho", "espejo emocional", "mis pensamientos más profundos", "reflexionar sobre lo que he dicho"];
+    if (MIRROR_KEYWORDS.some(keyword => userMessageLower.includes(keyword))) {
+      isSpecialRequestHandled = true;
+      console.log("[api/openai.js] Solicitud de Conversación Espejo detectada.");
+      const fechaFinEspejo = new Date();
+      const fechaInicioEspejo = new Date();
+      fechaInicioEspejo.setDate(fechaFinEspejo.getDate() - 14);
+      const mensajesEspejo = await generarConversacionEspejo(MOCK_USER_ID, { fechaInicio: fechaInicioEspejo, fechaFin: fechaFinEspejo }, null, 5);
+      if (mensajesEspejo && mensajesEspejo.length > 0) {
+        const systemPromptForMirror = baseSystemPrompt +
+          `\n\n[Instrucción especial: 'conversación espejo'. Selección de mensajes: ${JSON.stringify(mensajesEspejo)}. ` +
+          `Actúa como espejo emocional: 1. Presenta ideas clave conectadas. 2. Destaca altibajos/patrones con compasión. ` +
+          `3. Valida emociones. 4. Ayuda a autoconocimiento. 5. Concluye con reflexión/pregunta abierta. No aconsejes, refleja y valida.]`;
+        const messagesForAPIMirror = [
+            { role: 'system', content: systemPromptForMirror },
+            { role: 'user', content: userMessageContent }
+        ];
+        try {
+            const response = await axios.post('https://api.openai.com/v1/chat/completions', {
+                model: 'gpt-4o', messages: messagesForAPIMirror, temperature: 0.7, max_tokens: 1000,
+            }, { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' }});
+            willyResponseContent = response.data.choices[0].message.content;
+        } catch (error) {
+            console.error('Error (conversación espejo):', error.response ? error.response.data : error.message);
+            willyResponseContent = "Intenté reflexionar, pero tuve un problema. ¿Intentamos de nuevo?";
+        }
+      } else {
+        willyResponseContent = "No encontré suficientes momentos recientes para una 'conversación espejo'. Si me cuentas más, podré hacerlo.";
       }
-    } else {
-      willyResponseContent = "Me gustaría ayudarte a reflexionar, pero no encontré suficientes momentos significativos recientes para crear una 'conversación espejo' clara en este momento. Quizás si me cuentas un poco más o marcamos algunos pensamientos como importantes, podré hacerlo mejor en el futuro.";
     }
   }
 
-  // 4b. Predictive Analysis Request
+  // 4c. Predictive Analysis Request
   if (!isSpecialRequestHandled) {
     const PREDICTIVE_KEYWORDS = ["cómo crees que me sentiré", "anticipar emocionalmente", "qué días suelo estar", "predicción emocional", "patrón emocional para"];
     if (PREDICTIVE_KEYWORDS.some(keyword => userMessageLower.includes(keyword))) {
@@ -268,7 +300,7 @@ export async function getWillyResponse(userMessageContent) {
     }
   }
 
-  // 4c. Emotional Evolution Request Detection
+  // 4d. Emotional Evolution Request Detection
   if (!isSpecialRequestHandled) {
     const EVOLUTION_KEYWORDS = ["he mejorado emocionalmente", "cómo he cambiado", "evolución emocional", "más tranquilo ahora que antes", "mi progreso emocional"];
     if (EVOLUTION_KEYWORDS.some(keyword => userMessageLower.includes(keyword))) {
@@ -317,7 +349,7 @@ export async function getWillyResponse(userMessageContent) {
     }
   }
 
-  // 4d. Emotional Summary Request Detection
+  // 4e. Emotional Summary Request Detection
   if (!isSpecialRequestHandled) {
     const SUMMARY_KEYWORDS = ["cómo he estado", "resumen emocional", "emociones he sentido", "estado emocional", "mis emociones últimamente"];
     if (SUMMARY_KEYWORDS.some(keyword => userMessageLower.includes(keyword))) {
@@ -351,7 +383,7 @@ export async function getWillyResponse(userMessageContent) {
     }
   }
 
-  // 4e. Internet Search Detection
+  // 4f. Internet Search Detection
   if (!isSpecialRequestHandled) {
     let needsInternetSearch = false;
     let internetQuery = "";
@@ -376,7 +408,7 @@ export async function getWillyResponse(userMessageContent) {
     }
   }
 
-  // 4f. Memory Recall Detection
+  // 4g. Memory Recall Detection
   if (!isSpecialRequestHandled) {
     const wantsToRecall = RECALL_KEYWORDS.some(keyword => userMessageLower.includes(keyword));
     if (wantsToRecall) {

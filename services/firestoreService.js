@@ -95,6 +95,131 @@ export async function buscarMensajesPorPalabraClave(userId, keyword) {
 }
 
 /**
+ * Prepara datos para un gráfico de evolución emocional temporal (líneas).
+ * @param {string} userId - ID del usuario.
+ * @param {string} periodo - 'diario', 'semanal', 'mensual'.
+ * @param {number} numPeriodos - Número de periodos hacia atrás a considerar.
+ * @param {string[]} emocionesEspecificas - Opcional: array de emociones a graficar. Si no se da, se intentan las más frecuentes.
+ * @returns {Promise<object>} Objeto con estructura para Chart.js/Recharts: { labels: [], datasets: [] }
+ */
+export async function obtenerDatosEvolucionEmocionalParaGrafico(userId, periodo = 'semanal', numPeriodos = 4, emocionesEspecificas = []) {
+  try {
+    const endDate = new Date();
+    let startDate = new Date();
+    const labels = [];
+    const emotionData = {}; // { alegria: [1,2,3], tristeza: [0,1,1] }
+    const allMessages = [];
+
+    // 1. Determinar startDate y generar etiquetas (labels) para el eje X
+    if (periodo === 'diario') {
+      startDate.setDate(endDate.getDate() - numPeriodos + 1);
+      for (let i = 0; i < numPeriodos; i++) {
+        const date = new Date(startDate);
+        date.setDate(startDate.getDate() + i);
+        labels.push(date.toLocaleDateString('es-ES', { month: 'short', day: 'numeric' }));
+      }
+    } else if (periodo === 'semanal') {
+      startDate.setDate(endDate.getDate() - (numPeriodos * 7) + 1);
+       for (let i = 0; i < numPeriodos; i++) {
+        const weekStartDate = new Date(endDate);
+        weekStartDate.setDate(endDate.getDate() - ((numPeriodos - 1 - i) * 7) - weekStartDate.getDay() +1 ); // Lunes de esa semana
+        weekStartDate.setHours(0,0,0,0);
+        labels.push(`Sem. ${weekStartDate.toLocaleDateString('es-ES', { month: 'short', day: 'numeric' })}`);
+      }
+    } else if (periodo === 'mensual') {
+      startDate.setMonth(endDate.getMonth() - numPeriodos + 1);
+      startDate.setDate(1);
+      for (let i = 0; i < numPeriodos; i++) {
+        const monthDate = new Date(startDate);
+        monthDate.setMonth(startDate.getMonth() + i);
+        labels.push(monthDate.toLocaleDateString('es-ES', { year: 'numeric', month: 'short' }));
+      }
+    }
+    startDate.setHours(0,0,0,0); // Asegurar que startDate es al inicio del día
+    endDate.setHours(23,59,59,999); // Asegurar que endDate es al final del día
+
+    // 2. Obtener todos los mensajes en el rango total
+    const messagesInRange = await obtenerMensajesPorRangoFecha(userId, startDate, endDate);
+
+    // 3. Identificar las emociones a graficar
+    let emocionesAGraficar = emocionesEspecificas;
+    if (emocionesAGraficar.length === 0) {
+        // Si no se especifican, tomar las 3-5 más frecuentes del periodo total
+        const totalEmotionCounts = countEmotionFrequencies(messagesInRange);
+        emocionesAGraficar = Object.entries(totalEmotionCounts)
+                                .sort(([,a],[,b]) => b-a)
+                                .slice(0, 3) // Tomar las 3 más frecuentes
+                                .map(([em]) => em);
+    }
+    if (emocionesAGraficar.length === 0) { // Si sigue vacío (no hay emociones o solo neutras)
+        return { labels: [], datasets: [] }; // No hay nada que graficar
+    }
+
+    emocionesAGraficar.forEach(em => emotionData[em] = Array(numPeriodos).fill(0));
+
+    // 4. Agrupar mensajes y contar emociones por cada sub-periodo (label)
+    for (let i = 0; i < numPeriodos; i++) {
+      let subPeriodStartDate, subPeriodEndDate;
+      if (periodo === 'diario') {
+        subPeriodStartDate = new Date(startDate);
+        subPeriodStartDate.setDate(startDate.getDate() + i);
+        subPeriodEndDate = new Date(subPeriodStartDate);
+      } else if (periodo === 'semanal') {
+        // El inicio del lunes de la i-ésima semana contando desde el final
+        subPeriodStartDate = new Date(endDate);
+        subPeriodStartDate.setDate(endDate.getDate() - ((numPeriodos - 1 - i) * 7) - subPeriodStartDate.getDay() + 1 );
+        subPeriodEndDate = new Date(subPeriodStartDate);
+        subPeriodEndDate.setDate(subPeriodStartDate.getDate() + 6);
+      } else if (periodo === 'mensual') {
+        subPeriodStartDate = new Date(startDate);
+        subPeriodStartDate.setMonth(startDate.getMonth() + i);
+        subPeriodStartDate.setDate(1);
+        subPeriodEndDate = new Date(subPeriodStartDate);
+        subPeriodEndDate.setMonth(subPeriodStartDate.getMonth() + 1);
+        subPeriodEndDate.setDate(0); // Último día del mes
+      }
+      subPeriodStartDate.setHours(0,0,0,0);
+      subPeriodEndDate.setHours(23,59,59,999);
+
+      const messagesInSubPeriod = messagesInRange.filter(msg => {
+        const msgDate = msg.timestamp.toDate();
+        return msgDate >= subPeriodStartDate && msgDate <= subPeriodEndDate;
+      });
+
+      const subPeriodEmotionCounts = countEmotionFrequencies(messagesInSubPeriod);
+      emocionesAGraficar.forEach(em => {
+        if (subPeriodEmotionCounts[em]) {
+          emotionData[em][i] = subPeriodEmotionCounts[em];
+        }
+      });
+    }
+
+    // 5. Formatear para el gráfico
+    const datasets = [];
+    // Colores base para los gráficos (se pueden expandir o hacer dinámicos)
+    const colores = ['rgb(75, 192, 192)', 'rgb(255, 99, 132)', 'rgb(54, 162, 235)', 'rgb(255, 205, 86)', 'rgb(153, 102, 255)'];
+
+    emocionesAGraficar.forEach((em, index) => {
+      datasets.push({
+        label: em.charAt(0).toUpperCase() + em.slice(1), // Capitalizar emoción
+        data: emotionData[em],
+        borderColor: colores[index % colores.length],
+        backgroundColor: colores[index % colores.length].replace('rgb', 'rgba').replace(')', ', 0.5)'), // Para fill
+        tension: 0.1,
+        fill: false // Para gráfico de líneas, fill puede ser true para área debajo
+      });
+    });
+
+    console.log("[FirestoreService] Datos para gráfico de evolución:", { labels, datasets });
+    return { labels, datasets };
+
+  } catch (error) {
+    console.error("[FirestoreService] Error al obtener datos para gráfico de evolución:", error);
+    throw error;
+  }
+}
+
+/**
  * Obtiene patrones emocionales por etapa del mes.
  * @param {string} userId - ID del usuario.
  * @returns {Promise<object>} Objeto con emociones contadas por semana del mes.
