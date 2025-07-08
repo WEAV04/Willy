@@ -19,6 +19,8 @@ import * as terapiaContent from '../modules/modo_terapia/contenido_terapia.js';
 import { detectarEmocion } from '../modules/analisis_emocional/detectarEmocion.js';
 import { esEmocionNegativa, EMOCIONES } from '../modules/analisis_emocional/emociones_basicas.js';
 import { buscarFraseInspiradora, generarRespuestaFrustracionReflexiva } from '../modules/intervenciones_emocionales/frustracionReflexiva.js';
+import { evaluarSituacionYRecomendar as evaluarSituacionYRecomendarDefensa } from '../modules/defensaSegura.js';
+
 
 const OPENAI_API_KEY = 'TU_API_KEY_AQUI'; // Reemplaza con la clave real
 const MOCK_USER_ID = 'user123'; // Placeholder for user identification, debería ser dinámico
