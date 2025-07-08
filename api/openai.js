@@ -404,35 +404,44 @@ export async function getWillyResponse(userMessageContent, overrideSystemPrompt 
   }
 
   // 4e. Emotional Summary Request Detection
-  if (!isSpecialRequestHandled) {
+  if (!isSpecialRequestHandled && !overrideSystemPrompt) { // Ensure overrideSystemPrompt is not active
     const SUMMARY_KEYWORDS = ["cómo he estado", "resumen emocional", "emociones he sentido", "estado emocional", "mis emociones últimamente"];
     if (SUMMARY_KEYWORDS.some(keyword => userMessageLower.includes(keyword))) {
       isSpecialRequestHandled = true;
       console.log("[api/openai.js] Solicitud de resumen emocional detectada.");
-      let fechaInicio, fechaFin;
-      if (userMessageLower.includes("última semana") || userMessageLower.includes("esta semana")) {
-        fechaFin = new Date(); fechaInicio = new Date(); fechaInicio.setDate(fechaFin.getDate() - 6); fechaInicio.setHours(0,0,0,0);
-      } else if (userMessageLower.includes("último mes")) {
-        fechaFin = new Date(); fechaInicio = new Date(); fechaInicio.setMonth(fechaFin.getMonth() - 1); fechaInicio.setHours(0,0,0,0);
-      }
+      const { fechaInicio, fechaFin } = parseDateRangeForQuery(userMessageLower); // Use helper for date parsing
+
       const resumenTexto = await generarResumenEmocional(MOCK_USER_ID, fechaInicio, fechaFin);
-      const systemPromptForSummary = baseSystemPrompt +
-          `\n\n[Instrucción especial: Petición de resumen emocional. Datos: "${resumenTexto}". Preséntalo cálida y reflexivamente. Ofrece perspectiva o pregunta abierta.]`;
+
+      // Construct a dedicated system prompt for conversational summary
+      const systemPromptForConversationalSummary = overrideSystemPrompt ? overrideSystemPrompt : // Should not happen if !overrideSystemPrompt
+          baseSystemPrompt + `\n\n[Instrucción especial: El usuario ha pedido un resumen de su estado emocional. ` +
+          `Los datos clave son: "${resumenTexto}". ` +
+          `En lugar de solo listar los datos, quiero que actúes como Willy y tengas una conversación al respecto. ` +
+          `Puedes empezar diciendo algo como: "He estado reflexionando sobre cómo te has sentido últimamente, y he notado algunas cosas. ¿Te gustaría que te comparta un pequeño resumen?" ` +
+          `Si la respuesta implícita es sí (ya que el usuario lo pidió), entonces presenta el resumen de forma narrativa y empática. ` +
+          `Por ejemplo: 'Parece que en [periodo], tus emociones más frecuentes fueron [emociones]. También noté que...' ` +
+          `Concluye de una forma que invite a la reflexión o al diálogo continuo. Todo debe ser parte de tu respuesta conversacional.]`;
+
       const recentMessagesForSummary = (await obtenerMensajesRecientes(MOCK_USER_ID, 5)).map(msg => ({
           role: msg.role === 'willy' ? 'assistant' : 'user', content: msg.message
       }));
+
       const messagesForAPISummary = [
-          { role: 'system', content: systemPromptForSummary },
-          ...recentMessagesForSummary, { role: 'user', content: userMessageContent }
+          { role: 'system', content: systemPromptForConversationalSummary },
+          ...recentMessagesForSummary,
+          { role: 'user', content: userMessageContent } // Include the original user message that triggered the summary
       ];
+
       try {
           const response = await axios.post('https://api.openai.com/v1/chat/completions', {
               model: 'gpt-4o', messages: messagesForAPISummary, temperature: 0.7, max_tokens: 1000,
           }, { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' }});
           willyResponseContent = response.data.choices[0].message.content;
       } catch (error) {
-          console.error('Error (resumen):', error.response ? error.response.data : error.message);
-          willyResponseContent = "Generé tu resumen, pero tuve problema al expresarlo. Datos:\n" + resumenTexto;
+          console.error('Error (resumen conversacional):', error.response ? error.response.data : error.message);
+          // Fallback to a more direct presentation if OpenAI phrasing fails
+          willyResponseContent = "He preparado un resumen de tus emociones recientes: " + resumenTexto + "\n¿Qué piensas sobre esto?";
       }
     }
   }
