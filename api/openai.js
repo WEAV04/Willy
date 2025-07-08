@@ -9,7 +9,9 @@ import {
     obtenerMomentosMemorables,
     analizarEvolucionEmocional,
     predecirEstadoEmocional,
-    generarConversacionEspejo // Importar la nueva función
+    generarConversacionEspejo,
+    obtenerBalanceEmocional, // Importar para datos de pie chart
+    obtenerDatosEvolucionEmocionalParaGrafico // Importar para datos de line chart
 } from '../services/firestoreService.js';
 import { fetchAndParseDDG } from '../lib/internet.js';
 import * as terapiaLogic from '../modules/modo_terapia/logica_modo_terapia.js';
@@ -192,45 +194,93 @@ export async function getWillyResponse(userMessageContent) {
 
   // Order of Special Operations: Chart Request -> Mirror -> Predictive -> Evolution -> Summary -> Internet -> Recall
 
-  // 4a. Chart Request Detection
-  const CHART_KEYWORDS = ["muéstrame un gráfico", "visualizar mis emociones", "gráfico de evolución", "gráfico semanal", "gráfico mensual"];
-  if (!isSpecialRequestHandled && CHART_KEYWORDS.some(keyword => userMessageLower.includes(keyword))) {
-    isSpecialRequestHandled = true; // Mark as handled
-    console.log("[api/openai.js] Solicitud de gráfico detectada.");
+  // Helper function to parse date range for chart/summary requests
+  const parseDateRangeForQuery = (queryLower) => {
+      let fechaInicio, fechaFin;
+      if (queryLower.includes("última semana") || queryLower.includes("esta semana")) {
+        fechaFin = new Date();
+        fechaInicio = new Date();
+        fechaInicio.setDate(fechaFin.getDate() - 6);
+        fechaInicio.setHours(0,0,0,0);
+      } else if (queryLower.includes("último mes") || queryLower.includes("este mes")) {
+        fechaFin = new Date();
+        fechaInicio = new Date();
+        fechaInicio.setMonth(fechaFin.getMonth() - 1);
+        fechaInicio.setHours(0,0,0,0);
+        // Asegurar que fechaFin sea el día actual si es "este mes" para no ir a futuro
+        if (queryLower.includes("este mes")) fechaFin = new Date();
+      }
+      // Add more specific date parsers here if needed (e.g., "ayer", "últimos 15 días")
+      return { fechaInicio, fechaFin };
+  };
 
-    let chartPeriod = 'semanal'; // Default
-    let numChartPeriods = 4; // Default
-    if (userMessageLower.includes("mensual")) chartPeriod = 'mensual';
-    else if (userMessageLower.includes("diario")) chartPeriod = 'diario';
+  // 4a. Chart Request Logic
+  const CHART_LINE_KEYWORDS = ["gráfico de evolución", "evolución de mis emociones"];
+  const CHART_PIE_KEYWORDS = ["gráfico de balance", "balance de mis emociones", "gráfico de torta", "gráfico circular"];
+  // Add keywords for other chart types (bar, heatmap) as they get fully implemented for API response
 
-    if (userMessageLower.includes("últimas 8 semanas")) numChartPeriods = 8;
-    else if (userMessageLower.includes("últimos 6 meses")) numChartPeriods = 6;
+  if (!isSpecialRequestHandled && CHART_LINE_KEYWORDS.some(kw => userMessageLower.includes(kw))) {
+    isSpecialRequestHandled = true;
+    console.log("[api/openai.js] Solicitud de gráfico de líneas (evolución) detectada.");
+    const { fechaInicio, fechaFin } = parseDateRangeForQuery(userMessageLower); // Usa el helper
+    let periodo = 'semanal'; // Default
+    let numPeriodos = 4;   // Default
+    if (userMessageLower.includes("diario") || userMessageLower.includes("últimos días")) periodo = 'diario';
+    if (userMessageLower.includes("mensual")) periodo = 'mensual';
+    // Podríamos añadir lógica para derivar numPeriodos de frases como "últimos 15 días"
 
-    // This response from Willy is a placeholder.
-    // The actual chart rendering would happen on the frontend.
-    // The frontend would see this `action` and know to trigger the chart display.
-    willyResponseContent = `Entendido. Estoy preparando la información para tu gráfico de evolución emocional ${chartPeriod}. En un momento deberías poder verlo.`;
-
-    // We need a way to communicate to the frontend that a chart should be displayed.
-    // This could be by returning a special object or by the frontend also parsing Willy's text.
-    // For now, we'll just set a flag/data that the main function can return.
-    // This part is conceptual for how a full-stack app might handle it.
-    // In this environment, Willy just says he'll show it.
-    chartTriggerData = {
-        action: "display_chart",
-        chartType: "emotional_evolution_time_series",
-        params: {
-            userId: MOCK_USER_ID,
-            period: chartPeriod,
-            numPeriods: numChartPeriods
-        },
-        messageForUser: willyResponseContent
-    };
-    // For now, we'll just return the text part. The calling environment (if it's a UI)
-    // would need to interpret this or have a more structured way to get `chartTriggerData`.
+    const chartData = await obtenerDatosEvolucionEmocionalParaGrafico(MOCK_USER_ID, periodo, numPeriodos);
+    if (chartData && chartData.datasets && chartData.datasets.length > 0) {
+        const systemPromptForChart = baseSystemPrompt +
+            `\n\n[Instrucción especial: El usuario ha pedido un gráfico de su evolución emocional. Los datos son: ${JSON.stringify(chartData)}. ` +
+            `Interpreta estos datos con empatía. Comenta sobre los cambios, los altibajos, y ofrece apoyo o reconocimiento. ` +
+            `Por ejemplo: "He observado que esta semana comenzó con emociones más intensas, pero poco a poco has ido encontrando calma..."]`;
+        const messagesForAPIChart = [
+            { role: 'system', content: systemPromptForChart },
+            { role: 'user', content: userMessageContent } // Pregunta original
+        ];
+        try {
+            const response = await axios.post('https://api.openai.com/v1/chat/completions', {
+                model: 'gpt-4o', messages: messagesForAPIChart, temperature: 0.7, max_tokens: 1000,
+            }, { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' }});
+            willyResponseContent = response.data.choices[0].message.content;
+        } catch (error) {
+            willyResponseContent = "Pude obtener los datos para tu gráfico de evolución, pero tuve un problema al interpretarlos. Los datos sugieren [breve resumen manual si es posible o un mensaje genérico].";
+        }
+        chartTriggerData = { action: "display_chart", chartType: "line_emotional_evolution", data: chartData, messageForUser: willyResponseContent };
+    } else {
+        willyResponseContent = "No encontré suficientes datos para generar un gráfico de evolución emocional en el período solicitado.";
+    }
+  } else if (!isSpecialRequestHandled && CHART_PIE_KEYWORDS.some(kw => userMessageLower.includes(kw))) {
+    isSpecialRequestHandled = true;
+    console.log("[api/openai.js] Solicitud de gráfico de balance (pie) detectada.");
+    const { fechaInicio, fechaFin } = parseDateRangeForQuery(userMessageLower); // Usa el helper
+    const balanceData = await obtenerBalanceEmocional(MOCK_USER_ID, fechaInicio, fechaFin);
+    if (balanceData && balanceData.data.some(d => d > 0)) {
+        const systemPromptForPieChart = baseSystemPrompt +
+            `\n\n[Instrucción especial: El usuario ha pedido un gráfico de su balance emocional. Los datos son: Positivas ${balanceData.data[0]}, Negativas ${balanceData.data[1]}, Neutras ${balanceData.data[2]}. ` +
+            `Interpreta este balance. Si es positivo, celébrelo. Si hay muchas negativas, ofrece apoyo. ` +
+            `Por ejemplo: "En los últimos días, un ${ (balanceData.data[0] / (balanceData.data[0]+balanceData.data[1]+balanceData.data[2]) * 100).toFixed(0) }% de tus emociones han sido positivas..."]`;
+        const messagesForAPIPie = [
+            { role: 'system', content: systemPromptForPieChart },
+            { role: 'user', content: userMessageContent }
+        ];
+        try {
+            const response = await axios.post('https://api.openai.com/v1/chat/completions', {
+                model: 'gpt-4o', messages: messagesForAPIPie, temperature: 0.7, max_tokens: 1000,
+            }, { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' }});
+            willyResponseContent = response.data.choices[0].message.content;
+        } catch (error) {
+            willyResponseContent = `Tu balance emocional es: ${balanceData.data[0]} positivas, ${balanceData.data[1]} negativas, y ${balanceData.data[2]} neutras. Tuve un problema al darte una interpretación más detallada.`;
+        }
+        chartTriggerData = { action: "display_chart", chartType: "pie_emotional_balance", data: balanceData, messageForUser: willyResponseContent };
+    } else {
+        willyResponseContent = "No encontré suficientes datos para generar un gráfico de balance emocional en el período solicitado.";
+    }
   }
+  // TODO: Add similar blocks for bar chart (emotions by topic) and heatmap (weekly distribution)
 
-  // 4b. Mirror Conversation Request
+  // 4b. Mirror Conversation Request (if not a chart request)
   if (!isSpecialRequestHandled) {
     const MIRROR_KEYWORDS = ["cosas importantes te he dicho", "espejo emocional", "mis pensamientos más profundos", "reflexionar sobre lo que he dicho"];
     if (MIRROR_KEYWORDS.some(keyword => userMessageLower.includes(keyword))) {
@@ -264,7 +314,7 @@ export async function getWillyResponse(userMessageContent) {
     }
   }
 
-  // 4c. Predictive Analysis Request
+  // 4c. Predictive Analysis Request (if not chart or mirror)
   if (!isSpecialRequestHandled) {
     const PREDICTIVE_KEYWORDS = ["cómo crees que me sentiré", "anticipar emocionalmente", "qué días suelo estar", "predicción emocional", "patrón emocional para"];
     if (PREDICTIVE_KEYWORDS.some(keyword => userMessageLower.includes(keyword))) {

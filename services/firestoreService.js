@@ -95,6 +95,57 @@ export async function buscarMensajesPorPalabraClave(userId, keyword) {
 }
 
 /**
+ * Calcula el balance emocional (positivas, negativas, neutras) para un usuario en un rango de fechas.
+ * @param {string} userId - ID del usuario.
+ * @param {Date} [fechaInicio] - Fecha de inicio del rango (opcional).
+ * @param {Date} [fechaFin] - Fecha de fin del rango (opcional).
+ * @returns {Promise<object>} Objeto con formato { labels: ["Positivas", "Negativas", "Neutras"], data: [countPos, countNeg, countNeu] }
+ */
+export async function obtenerBalanceEmocional(userId, fechaInicio, fechaFin) {
+  try {
+    // Importar dinámicamente o asegurar que estén disponibles esEmocionPositiva y esEmocionNegativa
+    // Por ahora, asumimos que están en el mismo contexto o las definimos/importamos aquí.
+    // Importar correctamente las funciones de clasificación de emociones
+    const { esEmocionPositiva, esEmocionNegativa } = await import('../modules/analisis_emocional/emociones_basicas.js');
+
+    const messages = await obtenerMensajesPorRangoFecha(userId, fechaInicio, fechaFin);
+    if (messages.length === 0) {
+      console.log("[FirestoreService] No se encontraron mensajes para calcular balance emocional.");
+      return { labels: ["Positivas", "Negativas", "Neutras"], data: [0, 0, 0] };
+    }
+
+    let countPos = 0;
+    let countNeg = 0;
+    let countNeu = 0;
+
+    messages.forEach(msg => {
+      if (msg.emotion) {
+        if (esEmocionPositiva(msg.emotion)) {
+          countPos++;
+        } else if (esEmocionNegativa(msg.emotion)) {
+          countNeg++;
+        } else { // Considerar 'neutro', 'otro', o cualquier no clasificada como neutra
+          countNeu++;
+        }
+      } else {
+        countNeu++; // Si no hay emoción detectada, contarla como neutra
+      }
+    });
+
+    const result = {
+      labels: ["Positivas", "Negativas", "Neutras"],
+      data: [countPos, countNeg, countNeu]
+    };
+    console.log("[FirestoreService] Balance emocional calculado:", result);
+    return result;
+
+  } catch (error) {
+    console.error("[FirestoreService] Error al obtener balance emocional:", error);
+    throw error;
+  }
+}
+
+/**
  * Prepara datos para un gráfico de evolución emocional temporal (líneas).
  * @param {string} userId - ID del usuario.
  * @param {string} periodo - 'diario', 'semanal', 'mensual'.
