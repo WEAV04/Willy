@@ -11,18 +11,24 @@ import { EMOCIONES } from './emociones_basicas.js';
 const keywordsEmocionales = {
   [EMOCIONES.ALEGRIA]: ['feliz', 'contento', 'alegre', 'genial', 'maravilloso', 'excelente', 'divertido', 'encantado', 'emocionado', 'fantástico', 'celebrar', 'sonriendo', 'disfrutando'],
   [EMOCIONES.TRISTEZA]: ['triste', 'deprimido', 'desanimado', 'melancólico', 'llorando', 'abatido', 'infeliz', 'corazón roto', 'solo', 'sola', 'desesperanzado', 'nostalgia', 'pesimista'],
-  [EMOCIONES.IRA]: ['enojado', 'furioso', 'molesto', 'irritado', 'indignado', 'rabia', 'odio', 'frustrado', 'harto', 'fastidiado', 'colérico'],
-  [EMOCIONES.MIEDO]: ['miedo', 'asustado', 'aterrorizado', 'pánico', 'temeroso', 'nervioso', 'horror', 'preocupado por peligro'],
-  [EMOCIONES.ANSIEDAD]: ['ansioso', 'preocupado', 'nervioso', 'inquieto', 'estresado', 'tensión', 'angustiado', 'no puedo dormir', 'palpitaciones', 'agobiado'],
-  [EMOCIONES.CALMA]: ['calmado', 'tranquilo', 'relajado', 'sereno', 'paz', 'en paz', 'contento', 'satisfecho', 'bien'],
-  [EMOCIONES.SORPRESA]: ['sorprendido', 'asombrado', 'increíble', 'wow', 'no lo puedo creer', 'qué sorpresa', 'inesperado'],
-  [EMOCIONES.DESMOTIVACION]: ['desmotivado', 'sin ganas', 'apático', 'sin energía', 'no quiero hacer nada', 'pereza', 'indiferente', 'sin inspiración'],
-  [EMOCIONES.ESTRES]: ['estresado', 'tensión', 'presionado', 'agobiado', 'superado por trabajo', 'muchas cosas', 'saturado'],
-  [EMOCIONES.CULPA]: ['culpable', 'arrepentido', 'lo siento mucho por', 'mi culpa', 'debería haber', 'no debí'],
-  [EMOCIONES.VERGUENZA]: ['avergonzado', 'pena', 'qué vergüenza', 'humillado', 'ridículo'],
-  [EMOCIONES.FRUSTRACION]: ['frustrado', 'impotente', 'no puedo lograrlo', 'atascado', 'harto de intentar'],
-  [EMOCIONES.ESPERANZA]: ['esperanzado', 'optimista', 'fe', 'creo que saldrá bien', 'tengo esperanza', 'futuro mejor'],
-  [EMOCIONES.AMOR]: ['amo', 'quiero mucho', 'cariño', 'afecto', 'adoro', 'enamorado', 'mi amor']
+  [EMOCIONES.IRA]: ['enojado', 'furioso', 'molesto', 'irritado', 'indignado', 'rabia', 'odio', 'fastidiado', 'colérico', 'exasperado', 'harto de esto'],
+  [EMOCIONES.MIEDO]: ['miedo', 'asustado', 'aterrorizado', 'pánico', 'temeroso', 'nervioso', 'horror', 'preocupado por peligro', 'temblando'],
+  [EMOCIONES.ANSIEDAD]: ['ansioso', 'preocupado', 'nervioso', 'inquieto', 'estresado', 'tensión', 'angustiado', 'no puedo dormir', 'palpitaciones', 'agobiado', 'presión en el pecho'],
+  [EMOCIONES.CALMA]: ['calmado', 'tranquilo', 'relajado', 'sereno', 'paz', 'en paz', 'contento', 'satisfecho', 'bien', 'a gusto'],
+  [EMOCIONES.SORPRESA]: ['sorprendido', 'asombrado', 'increíble', 'wow', 'no lo puedo creer', 'qué sorpresa', 'inesperado', 'alucinado'],
+  [EMOCIONES.DESMOTIVACION]: ['desmotivado', 'sin ganas', 'apático', 'sin energía', 'no quiero hacer nada', 'pereza', 'indiferente', 'sin inspiración', 'desganado'],
+  [EMOCIONES.ESTRES]: ['estresado', 'tensión', 'presionado', 'agobiado', 'superado por trabajo', 'muchas cosas', 'saturado', 'bajo presión', 'al límite'],
+  [EMOCIONES.CULPA]: ['culpable', 'arrepentido', 'lo siento mucho por', 'mi culpa', 'debería haber', 'no debí', 'me siento mal por'],
+  [EMOCIONES.VERGUENZA]: ['avergonzado', 'pena', 'qué vergüenza', 'humillado', 'ridículo', 'bochorno'],
+  [EMOCIONES.FRUSTRACION]: [
+    'frustrado', 'frustrada', 'impotente', 'no puedo lograrlo', 'atascado', 'atascada',
+    'harto de intentar', 'harta de intentar', 'no avanzo', 'esto no funciona',
+    'qué rabia', 'me da coraje', 'no puede ser', 'otra vez', 'siempre igual',
+    'por qué a mí', 'estoy cansado de esto', 'estoy cansada de esto', 'no sé qué más hacer',
+    'me rindo', 'ya no quiero seguir', 'es inútil'
+  ],
+  [EMOCIONES.ESPERANZA]: ['esperanzado', 'optimista', 'fe', 'creo que saldrá bien', 'tengo esperanza', 'futuro mejor', 'confío en que'],
+  [EMOCIONES.AMOR]: ['amo', 'quiero mucho', 'cariño', 'afecto', 'adoro', 'enamorado', 'mi amor', 'te quiero']
 };
 
 // Negaciones comunes que pueden invertir el significado de una emoción cercana

@@ -18,6 +18,7 @@ import * as terapiaLogic from '../modules/modo_terapia/logica_modo_terapia.js';
 import * as terapiaContent from '../modules/modo_terapia/contenido_terapia.js';
 import { detectarEmocion } from '../modules/analisis_emocional/detectarEmocion.js';
 import { esEmocionNegativa, EMOCIONES } from '../modules/analisis_emocional/emociones_basicas.js';
+import { buscarFraseInspiradora, generarRespuestaFrustracionReflexiva } from '../modules/intervenciones_emocionales/frustracionReflexiva.js';
 
 const OPENAI_API_KEY = 'TU_API_KEY_AQUI'; // Reemplaza con la clave real
 const MOCK_USER_ID = 'user123'; // Placeholder for user identification, debería ser dinámico
@@ -112,14 +113,66 @@ export async function getWillyResponse(userMessageContent, overrideSystemPrompt 
   }
   // --- Fin Lógica de Anclajes Emocionales (Recuperar) ---
 
+  // --- Inicio Lógica de Intervención para Frustración (antes de Modo Terapia general) ---
+  let frustracionIntervenida = false;
+  if (emocionDetectada === EMOCIONES.FRUSTRACION && !terapiaLogic.estaEnModoTerapia()) { // Solo si no está ya en modo terapia
+    const ultimosMensajes = await obtenerMensajesRecientes(MOCK_USER_ID, 3); // Revisar los últimos mensajes del usuario
+    let frustracionCount = 0;
+    if (emocionDetectada === EMOCIONES.FRUSTRACION) frustracionCount++;
+    if (ultimosMensajes.length > 0 && ultimosMensajes[0].role === 'user' && ultimosMensajes[0].emotion === EMOCIONES.FRUSTRACION) {
+        frustracionCount++;
+    }
+     if (ultimosMensajes.length > 1 && ultimosMensajes[1].role === 'user' && ultimosMensajes[1].emotion === EMOCIONES.FRUSTRACION) {
+        // Esta condición es para si el historial es [user (frust), willy, user (frust)]
+        // o [user (frust), user (frust)]. El índice 1 sería el penúltimo mensaje del usuario.
+        // Necesitaríamos filtrar para asegurar que es el del usuario.
+        // Simplificación: si los dos últimos mensajes del usuario fueron frustración
+        // O si la frustración actual es muy intensa (requeriría keywords de intensidad)
+    }
 
-  // 3. Therapy Mode Logic (check before standard operations)
-  if (terapiaLogic.detectarDesactivacionTerapia(userMessageLower)) {
-    initialTherapyMessage = terapiaLogic.desactivarModoTerapia();
-    if (initialTherapyMessage) willyResponseContent = initialTherapyMessage;
-  } else if (terapiaLogic.estaEnModoTerapia() || terapiaLogic.detectarNecesidadTerapia(userMessageLower) || (emocionDetectada && esEmocionNegativa(emocionDetectada) && !terapiaLogic.estaEnModoTerapia())) {
-    if (!terapiaLogic.estaEnModoTerapia()) {
-        if (emocionDetectada && esEmocionNegativa(emocionDetectada) && !ACTIVAR_KEYWORDS.some(kw => userMessageLower.includes(kw))) {
+
+    // Condición simple: si la frustración es la emoción actual y también la del mensaje anterior del usuario.
+    // Para una lógica de "dos mensajes de usuario seguidos con frustración", necesitamos asegurar que el historial lo refleje.
+    // `obtenerMensajesRecientes` devuelve [..., penultimo_usuario, ultimo_willy, ultimo_usuario (actual)]
+    // o [..., antepenultimo_usuario, penultimo_willy, ultimo_usuario (actual)] si Willy respondió
+    // o [..., penultimo_usuario, ultimo_usuario (actual)] si Willy no respondió.
+    // Buscamos el mensaje anterior del *usuario*.
+    let previousUserMessage = null;
+    if (ultimosMensajes.length >=2 && ultimosMensajes[ultimosMensajes.length-2].role === 'user') { // [..., prev_user, current_user]
+        previousUserMessage = ultimosMensajes[ultimosMensajes.length-2];
+    } else if (ultimosMensajes.length >=3 && ultimosMensajes[ultimosMensajes.length-3].role === 'user') { // [..., prev_user, willy, current_user]
+        previousUserMessage = ultimosMensajes[ultimosMensajes.length-3];
+    }
+
+
+    if (previousUserMessage && previousUserMessage.emotion === EMOCIONES.FRUSTRACION) {
+      console.log("[api/openai.js] Frustración repetida detectada, intentando intervención reflexiva.");
+      // Determinar un tema de búsqueda para la frase. Podría ser genérico o intentar extraer del contexto.
+      const temaBusquedaFrase = "paciencia superación perspectiva"; // Temas generales para frustración
+      const quoteObj = await buscarFraseInspiradora(temaBusquedaFrase, viewTextWebsiteTool);
+      willyResponseContent = generarRespuestaFrustracionReflexiva(quoteObj);
+
+      await guardarMensajeFirestore({
+          userId: MOCK_USER_ID,
+          role: 'willy',
+          message: willyResponseContent,
+          emotion: EMOCIONES.CALMA // Willy intenta inducir calma o esperanza
+      });
+      frustracionIntervenida = true; // Marcar que la intervención se realizó
+      return willyResponseContent; // Retornar directamente
+    }
+  }
+  // --- Fin Lógica de Intervención para Frustración ---
+
+
+  // 3. Therapy Mode Logic (check before standard operations, and if no frustration intervention occurred)
+  if (!frustracionIntervenida) {
+    if (terapiaLogic.detectarDesactivacionTerapia(userMessageLower)) {
+      initialTherapyMessage = terapiaLogic.desactivarModoTerapia();
+      if (initialTherapyMessage) willyResponseContent = initialTherapyMessage;
+    } else if (terapiaLogic.estaEnModoTerapia() || terapiaLogic.detectarNecesidadTerapia(userMessageLower) || (emocionDetectada && esEmocionNegativa(emocionDetectada) && !terapiaLogic.estaEnModoTerapia())) {
+      if (!terapiaLogic.estaEnModoTerapia()) {
+          if (emocionDetectada && esEmocionNegativa(emocionDetectada) && !ACTIVAR_KEYWORDS.some(kw => userMessageLower.includes(kw))) {
              // --- Inicio Integración Emocional (Sugerir Recuerdo Positivo) ---
              const momentosPositivos = await obtenerMomentosMemorables(MOCK_USER_ID, 1); // Buscar si hay alguno
              if (momentosPositivos && momentosPositivos.length > 0) {
