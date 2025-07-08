@@ -94,6 +94,135 @@ export async function buscarMensajesPorPalabraClave(userId, keyword) {
   }
 }
 
+
+/**
+ * Helper function to count emotion frequencies from a list of messages.
+ * @param {object[]} messages - Array of message objects.
+ * @returns {object} Object with emotion counts, e.g., { tristeza: 5, alegria: 10 }
+ */
+function countEmotionFrequencies(messages) {
+  const emocionCounts = {};
+  messages.forEach(msg => {
+    if (msg.emotion && msg.emotion !== 'neutro' && msg.emotion !== 'otro') {
+      emocionCounts[msg.emotion] = (emocionCounts[msg.emotion] || 0) + 1;
+    }
+  });
+  return emocionCounts;
+}
+
+/**
+ * Analiza la evolución emocional del usuario comparando dos periodos o dos mitades de un periodo.
+ * @param {string} userId - ID del usuario.
+ * @param {{ fechaInicio: Date, fechaFin: Date }} rango1 - El primer rango de fechas.
+ * @param {{ fechaInicio: Date, fechaFin: Date }} [rango2] - El segundo rango de fechas (opcional).
+ * @returns {Promise<object>} Un objeto con el análisis de evolución emocional.
+ *                           Ej: { periodo1: {emocionCounts, label}, periodo2: {emocionCounts, label}, tendencia: string, comentario: string }
+ */
+export async function analizarEvolucionEmocional(userId, rango1, rango2) {
+  try {
+    let mensajesPeriodo1, mensajesPeriodo2;
+    let labelPeriodo1 = `del ${rango1.fechaInicio.toLocaleDateString()} al ${rango1.fechaFin.toLocaleDateString()}`;
+    let labelPeriodo2 = "";
+
+    if (rango2) { // Comparar dos rangos distintos
+      mensajesPeriodo1 = await obtenerMensajesPorRangoFecha(userId, rango1.fechaInicio, rango1.fechaFin);
+      mensajesPeriodo2 = await obtenerMensajesPorRangoFecha(userId, rango2.fechaInicio, rango2.fechaFin);
+      labelPeriodo2 = `del ${rango2.fechaInicio.toLocaleDateString()} al ${rango2.fechaFin.toLocaleDateString()}`;
+    } else { // Comparar dos mitades de un solo rango
+      const duracionTotalMs = rango1.fechaFin.getTime() - rango1.fechaInicio.getTime();
+      const mitadDuracionMs = Math.floor(duracionTotalMs / 2);
+
+      const finPrimeraMitad = new Date(rango1.fechaInicio.getTime() + mitadDuracionMs);
+      const inicioSegundaMitad = new Date(finPrimeraMitad.getTime() + 1); // Empezar justo después
+
+      mensajesPeriodo1 = await obtenerMensajesPorRangoFecha(userId, rango1.fechaInicio, finPrimeraMitad);
+      mensajesPeriodo2 = await obtenerMensajesPorRangoFecha(userId, inicioSegundaMitad, rango1.fechaFin);
+
+      labelPeriodo1 = `la primera mitad del periodo (aprox. del ${rango1.fechaInicio.toLocaleDateString()} al ${finPrimeraMitad.toLocaleDateString()})`;
+      labelPeriodo2 = `la segunda mitad del periodo (aprox. del ${inicioSegundaMitad.toLocaleDateString()} al ${rango1.fechaFin.toLocaleDateString()})`;
+    }
+
+    if (mensajesPeriodo1.length === 0 && mensajesPeriodo2.length === 0) {
+      return {
+        periodo1: { label: labelPeriodo1, emocionCounts: {} },
+        periodo2: { label: labelPeriodo2, emocionCounts: {} },
+        tendencia: "Datos insuficientes",
+        comentario: "No encontré suficientes mensajes en los periodos especificados para analizar tu evolución emocional."
+      };
+    }
+
+    const emocionesPeriodo1 = countEmotionFrequencies(mensajesPeriodo1);
+    const emocionesPeriodo2 = countEmotionFrequencies(mensajesPeriodo2);
+
+    // Análisis de tendencia (simplificado)
+    let tendencia = "Estable"; // Default
+    let comentario = "Tu estado emocional parece haberse mantenido relativamente estable";
+
+    // Sumar totales de emociones positivas y negativas para una comparación general
+    // (Necesitaríamos importar esEmocionPositiva/Negativa de emociones_basicas.js aquí o definirlas)
+    // Esta es una simplificación, un análisis más detallado miraría emociones específicas.
+    let totalPositivoP1 = 0, totalNegativoP1 = 0;
+    let totalPositivoP2 = 0, totalNegativoP2 = 0;
+
+    // Definiciones simplificadas de emociones positivas/negativas para este contexto.
+    // Idealmente, se importaría de `emociones_basicas.js`.
+    const POSITIVAS_SIMPLIFICADO = ['alegria', 'calma', 'esperanza', 'amor'];
+    const NEGATIVAS_SIMPLIFICADO = ['tristeza', 'ira', 'miedo', 'ansiedad', 'desmotivacion', 'estres', 'culpa', 'verguenza', 'frustracion'];
+
+    for (const em in emocionesPeriodo1) {
+      if (POSITIVAS_SIMPLIFICADO.includes(em)) totalPositivoP1 += emocionesPeriodo1[em];
+      if (NEGATIVAS_SIMPLIFICADO.includes(em)) totalNegativoP1 += emocionesPeriodo1[em];
+    }
+    for (const em in emocionesPeriodo2) {
+      if (POSITIVAS_SIMPLIFICADO.includes(em)) totalPositivoP2 += emocionesPeriodo2[em];
+      if (NEGATIVAS_SIMPLIFICADO.includes(em)) totalNegativoP2 += emocionesPeriodo2[em];
+    }
+
+    const cambioPositivas = totalPositivoP2 - totalPositivoP1;
+    const cambioNegativas = totalNegativoP2 - totalNegativoP1;
+
+    if (cambioPositivas > 0 && cambioNegativas < 0) {
+      tendencia = "Mejora emocional significativa";
+      comentario = `He notado una mejora emocional. Parece que experimentaste más emociones positivas (como alegría o calma) y menos negativas (como tristeza o ansiedad) en ${labelPeriodo2} en comparación con ${labelPeriodo1}.`;
+    } else if (cambioPositivas > 0) {
+      tendencia = "Aumento de emociones positivas";
+      comentario = `Observo un aumento en tus emociones positivas en ${labelPeriodo2} comparado con ${labelPeriodo1}.`;
+    } else if (cambioNegativas < 0) {
+      tendencia = "Disminución de emociones negativas";
+      comentario = `Parece que hubo una disminución en las emociones negativas que registramos en ${labelPeriodo2} en comparación con ${labelPeriodo1}.`;
+    } else if (cambioNegativas > 0 && cambioPositivas < 0) {
+      tendencia = "Aumento de emociones negativas y disminución de positivas";
+      comentario = `Detecté un aumento en emociones negativas y una disminución en las positivas en ${labelPeriodo2} respecto a ${labelPeriodo1}. Quizás valga la pena explorar qué pudo haber influido.`;
+    } else if (cambioNegativas > 0) {
+        tendencia = "Aumento de emociones negativas";
+        comentario = `Noté un incremento en algunas emociones negativas durante ${labelPeriodo2} en comparación con ${labelPeriodo1}.`;
+    }
+    // Se pueden añadir más heurísticas para tendencias específicas (ej. "Aumento de calma", "Reducción de estrés")
+    // analizando emociones individuales.
+
+    // Comentario más detallado si hay datos
+    if ( (mensajesPeriodo1.length > 0 || mensajesPeriodo2.length > 0) && comentario === "Tu estado emocional parece haberse mantenido relativamente estable") {
+        if (Object.keys(emocionesPeriodo1).length > 0 || Object.keys(emocionesPeriodo2).length > 0) {
+             comentario += ", sin grandes cambios en las emociones predominantes.";
+        } else {
+             comentario = "No registré suficientes emociones específicas para detallar una evolución, pero estoy aquí para seguir acompañándote.";
+        }
+    }
+
+
+    return {
+      periodo1: { label: labelPeriodo1, emocionCounts: emocionesPeriodo1 },
+      periodo2: { label: labelPeriodo2, emocionCounts: emocionesPeriodo2 },
+      tendencia,
+      comentario
+    };
+
+  } catch (error) {
+    console.error("[FirestoreService] Error al analizar evolución emocional: ", error);
+    throw error;
+  }
+}
+
 /**
  * Marca un mensaje como memorable en Firestore.
  * @param {string} mensajeId - El ID del documento del mensaje a marcar.
