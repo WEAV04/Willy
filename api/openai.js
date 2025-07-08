@@ -8,7 +8,8 @@ import {
     marcarComoMemorable,
     obtenerMomentosMemorables,
     analizarEvolucionEmocional,
-    predecirEstadoEmocional // Importar la nueva función
+    predecirEstadoEmocional,
+    generarConversacionEspejo // Importar la nueva función
 } from '../services/firestoreService.js';
 import { fetchAndParseDDG } from '../lib/internet.js';
 import * as terapiaLogic from '../modules/modo_terapia/logica_modo_terapia.js';
@@ -174,7 +175,7 @@ export async function getWillyResponse(userMessageContent) {
     return willyResponseContent;
   }
 
-  // 4. Standard Operation: Internet Search, Memory Recall, Emotional Summary, Evolution or Predictive Chat
+  // 4. Standard Operation: Internet Search, Memory Recall, Emotional Summary, Evolution, Predictive Chat, or Mirror Conversation
   let memoryContext = "";
   let internetContext = "";
   let finalSystemPrompt = baseSystemPrompt;
@@ -188,49 +189,86 @@ export async function getWillyResponse(userMessageContent) {
     }
   }
 
-  // Order of Special Operations: Predictive -> Evolution -> Summary -> Internet -> Recall
+  // Order of Special Operations: Mirror -> Predictive -> Evolution -> Summary -> Internet -> Recall
 
-  // 4a. Predictive Analysis Request
-  const PREDICTIVE_KEYWORDS = ["cómo crees que me sentiré", "anticipar emocionalmente", "qué días suelo estar", "predicción emocional", "patrón emocional para"];
-  if (!isSpecialRequestHandled && PREDICTIVE_KEYWORDS.some(keyword => userMessageLower.includes(keyword))) {
+  // 4a. Mirror Conversation Request
+  const MIRROR_KEYWORDS = ["cosas importantes te he dicho", "espejo emocional", "mis pensamientos más profundos", "reflexionar sobre lo que he dicho"];
+  if (!isSpecialRequestHandled && MIRROR_KEYWORDS.some(keyword => userMessageLower.includes(keyword))) {
     isSpecialRequestHandled = true;
-    console.log("[api/openai.js] Solicitud de predicción/patrón emocional detectada.");
-    let fechaObjetivo = null;
-    // Simple date parsing for "próxima semana", "próximo lunes", etc.
-    if (userMessageLower.includes("próxima semana") || userMessageLower.includes("semana que viene")) {
-        fechaObjetivo = new Date();
-        fechaObjetivo.setDate(fechaObjetivo.getDate() + 7);
-    } else if (userMessageLower.match(/próximo lunes|lunes que viene/)) {
-        fechaObjetivo = new Date();
-        while (fechaObjetivo.getDay() !== 1) { fechaObjetivo.setDate(fechaObjetivo.getDate() + 1); }
-    } // Add more specific date parsers as needed...
+    console.log("[api/openai.js] Solicitud de Conversación Espejo detectada.");
+    // Default to last 15 days, 5 messages, no specific emotion filter for Phase 1
+    const fechaFinEspejo = new Date();
+    const fechaInicioEspejo = new Date();
+    fechaInicioEspejo.setDate(fechaFinEspejo.getDate() - 14); // Approx last 15 days
 
-    const prediccionData = await predecirEstadoEmocional(MOCK_USER_ID, fechaObjetivo);
-    const systemPromptForPrediction = baseSystemPrompt +
-        `\n\n[Instrucción especial: El usuario ha pedido un análisis de patrones o una 'predicción' emocional. Aquí tienes los datos del análisis: ${JSON.stringify(prediccionData)}. ` +
-        `Comunica esta información con mucho tacto y cuidado, enfatizando que son patrones pasados y no certezas futuras. ` +
-        `Usa el 'comentario' de los datos como base y ofrece apoyo o la opción de pensar en estrategias si se anticipa una emoción difícil.]`;
+    const mensajesEspejo = await generarConversacionEspejo(MOCK_USER_ID, { fechaInicio: fechaInicioEspejo, fechaFin: fechaFinEspejo }, null, 5);
 
-    const recentMessagesForPrediction = (await obtenerMensajesRecientes(MOCK_USER_ID, 3)).map(msg => ({
-        role: msg.role === 'willy' ? 'assistant' : 'user', content: msg.message
-    }));
-    const messagesForAPIPrediction = [
-        { role: 'system', content: systemPromptForPrediction },
-        ...recentMessagesForPrediction,
-        { role: 'user', content: userMessageContent }
-    ];
-    try {
-        const response = await axios.post('https://api.openai.com/v1/chat/completions', {
-            model: 'gpt-4o', messages: messagesForAPIPrediction, temperature: 0.7, max_tokens: 1000,
-        }, { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' }});
-        willyResponseContent = response.data.choices[0].message.content;
-    } catch (error) {
-        console.error('Error al obtener respuesta de Willy (predicción emocional):', error.response ? error.response.data : error.message);
-        willyResponseContent = "Pude analizar tus patrones emocionales, pero tuve un problema al expresarlo. El análisis sugiere: " + (prediccionData.comentario || "No se pudo generar un comentario detallado.");
+    if (mensajesEspejo && mensajesEspejo.length > 0) {
+      const systemPromptForMirror = baseSystemPrompt +
+        `\n\n[Instrucción especial: El usuario ha pedido una 'conversación espejo'. Aquí tienes una selección de sus mensajes/ideas clave recientes: ${JSON.stringify(mensajesEspejo)}. ` +
+        `Tu tarea es actuar como un espejo emocional: ` +
+        `1. Presenta estos mensajes o sus ideas clave de una manera lógica y conectada. ` +
+        `2. Destaca los posibles altibajos emocionales, patrones, o incluso aparentes contradicciones, pero siempre con profunda compasión y sin juzgar. ` +
+        `3. Valida las emociones expresadas. ` +
+        `4. Ayuda al usuario a verse a sí mismo con más claridad y amabilidad, fomentando el autoconocimiento. ` +
+        `5. Puedes concluir con una reflexión gentil o una pregunta abierta que invite a una mayor introspección. Evita dar consejos, enfócate en reflejar y validar.]`;
+
+      // For mirror conversation, we might not need much recent chat history, as the focus is on the selected past messages.
+      const messagesForAPIMirror = [
+          { role: 'system', content: systemPromptForMirror },
+          { role: 'user', content: userMessageContent } // The user's request for the mirror
+      ];
+      try {
+          const response = await axios.post('https://api.openai.com/v1/chat/completions', {
+              model: 'gpt-4o', messages: messagesForAPIMirror, temperature: 0.7, max_tokens: 1000,
+          }, { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' }});
+          willyResponseContent = response.data.choices[0].message.content;
+      } catch (error) {
+          console.error('Error al obtener respuesta de Willy (conversación espejo):', error.response ? error.response.data : error.message);
+          willyResponseContent = "Intenté reflexionar sobre tus mensajes recientes, pero tuve un pequeño problema. ¿Podríamos intentarlo de nuevo o quizás hablar de algo más específico?";
+      }
+    } else {
+      willyResponseContent = "Me gustaría ayudarte a reflexionar, pero no encontré suficientes momentos significativos recientes para crear una 'conversación espejo' clara en este momento. Quizás si me cuentas un poco más o marcamos algunos pensamientos como importantes, podré hacerlo mejor en el futuro.";
     }
   }
 
-  // 4b. Emotional Evolution Request Detection
+  // 4b. Predictive Analysis Request
+  if (!isSpecialRequestHandled) {
+    const PREDICTIVE_KEYWORDS = ["cómo crees que me sentiré", "anticipar emocionalmente", "qué días suelo estar", "predicción emocional", "patrón emocional para"];
+    if (PREDICTIVE_KEYWORDS.some(keyword => userMessageLower.includes(keyword))) {
+      isSpecialRequestHandled = true;
+      console.log("[api/openai.js] Solicitud de predicción/patrón emocional detectada.");
+      let fechaObjetivo = null;
+      if (userMessageLower.includes("próxima semana") || userMessageLower.includes("semana que viene")) {
+          fechaObjetivo = new Date(); fechaObjetivo.setDate(fechaObjetivo.getDate() + 7);
+      } else if (userMessageLower.match(/próximo lunes|lunes que viene/)) {
+          fechaObjetivo = new Date(); while (fechaObjetivo.getDay() !== 1) { fechaObjetivo.setDate(fechaObjetivo.getDate() + 1); }
+      }
+      const prediccionData = await predecirEstadoEmocional(MOCK_USER_ID, fechaObjetivo);
+      const systemPromptForPrediction = baseSystemPrompt +
+          `\n\n[Instrucción especial: Petición de análisis de patrones o 'predicción' emocional. Datos: ${JSON.stringify(prediccionData)}. ` +
+          `Comunica esto con tacto, como posibilidades basadas en el pasado, no certezas. ` +
+          `Usa el 'comentario' de los datos y ofrece apoyo o discutir estrategias.]`;
+      const recentMessagesForPrediction = (await obtenerMensajesRecientes(MOCK_USER_ID, 3)).map(msg => ({
+          role: msg.role === 'willy' ? 'assistant' : 'user', content: msg.message
+      }));
+      const messagesForAPIPrediction = [
+          { role: 'system', content: systemPromptForPrediction },
+          ...recentMessagesForPrediction, { role: 'user', content: userMessageContent }
+      ];
+      try {
+          const response = await axios.post('https://api.openai.com/v1/chat/completions', {
+              model: 'gpt-4o', messages: messagesForAPIPrediction, temperature: 0.7, max_tokens: 1000,
+          }, { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' }});
+          willyResponseContent = response.data.choices[0].message.content;
+      } catch (error) {
+          console.error('Error (predicción emocional):', error.response ? error.response.data : error.message);
+          willyResponseContent = "Analicé tus patrones, pero tuve un problema al expresarlo. Sugiere: " + (prediccionData.comentario || "No se pudo generar comentario.");
+      }
+    }
+  }
+
+  // 4c. Emotional Evolution Request Detection
   if (!isSpecialRequestHandled) {
     const EVOLUTION_KEYWORDS = ["he mejorado emocionalmente", "cómo he cambiado", "evolución emocional", "más tranquilo ahora que antes", "mi progreso emocional"];
     if (EVOLUTION_KEYWORDS.some(keyword => userMessageLower.includes(keyword))) {
@@ -257,9 +295,9 @@ export async function getWillyResponse(userMessageContent) {
       }
       const evolucionData = await analizarEvolucionEmocional(MOCK_USER_ID, rango1, rango2);
       const systemPromptForEvolution = baseSystemPrompt +
-          `\n\n[Instrucción especial: El usuario ha pedido un análisis de su evolución emocional. Aquí tienes los datos: ${JSON.stringify(evolucionData)}. ` +
-          `Explícale esto de manera comprensiva y cálida. Usa el 'comentario' como base, pero siéntete libre de expandirlo. ` +
-          `Destaca cambios positivos y ofrece apoyo si se observan desafíos.]`;
+          `\n\n[Instrucción especial: Petición de análisis de evolución emocional. Datos: ${JSON.stringify(evolucionData)}. ` +
+          `Explica esto comprensiva y cálidamente. Usa el 'comentario' como base. ` +
+          `Destaca cambios positivos y ofrece apoyo.]`;
       const recentMessagesForEvolution = (await obtenerMensajesRecientes(MOCK_USER_ID, 3)).map(msg => ({
           role: msg.role === 'willy' ? 'assistant' : 'user', content: msg.message
       }));
@@ -273,13 +311,13 @@ export async function getWillyResponse(userMessageContent) {
           }, { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' }});
           willyResponseContent = response.data.choices[0].message.content;
       } catch (error) {
-          console.error('Error al obtener respuesta de Willy (evolución emocional):', error.response ? error.response.data : error.message);
-          willyResponseContent = "Pude analizar tu evolución, pero tuve un problema al expresarlo. El análisis indica: " + (evolucionData.comentario || "No se pudo generar un comentario.");
+          console.error('Error (evolución emocional):', error.response ? error.response.data : error.message);
+          willyResponseContent = "Analicé tu evolución, pero tuve problema al expresarlo. Indica: " + (evolucionData.comentario || "No se pudo generar comentario.");
       }
     }
   }
 
-  // 4c. Emotional Summary Request Detection
+  // 4d. Emotional Summary Request Detection
   if (!isSpecialRequestHandled) {
     const SUMMARY_KEYWORDS = ["cómo he estado", "resumen emocional", "emociones he sentido", "estado emocional", "mis emociones últimamente"];
     if (SUMMARY_KEYWORDS.some(keyword => userMessageLower.includes(keyword))) {
@@ -293,7 +331,7 @@ export async function getWillyResponse(userMessageContent) {
       }
       const resumenTexto = await generarResumenEmocional(MOCK_USER_ID, fechaInicio, fechaFin);
       const systemPromptForSummary = baseSystemPrompt +
-          `\n\n[Instrucción especial: El usuario ha pedido un resumen de su estado emocional. Datos: "${resumenTexto}". Preséntalo de forma cálida y reflexiva. Ofrece una perspectiva gentil o una pregunta abierta.]`;
+          `\n\n[Instrucción especial: Petición de resumen emocional. Datos: "${resumenTexto}". Preséntalo cálida y reflexivamente. Ofrece perspectiva o pregunta abierta.]`;
       const recentMessagesForSummary = (await obtenerMensajesRecientes(MOCK_USER_ID, 5)).map(msg => ({
           role: msg.role === 'willy' ? 'assistant' : 'user', content: msg.message
       }));
@@ -307,13 +345,13 @@ export async function getWillyResponse(userMessageContent) {
           }, { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' }});
           willyResponseContent = response.data.choices[0].message.content;
       } catch (error) {
-          console.error('Error al obtener respuesta de Willy (resumen):', error.response ? error.response.data : error.message);
-          willyResponseContent = "Generé tu resumen, pero tuve un problema al expresarlo. Aquí están los datos:\n" + resumenTexto;
+          console.error('Error (resumen):', error.response ? error.response.data : error.message);
+          willyResponseContent = "Generé tu resumen, pero tuve problema al expresarlo. Datos:\n" + resumenTexto;
       }
     }
   }
 
-  // 4d. Internet Search Detection
+  // 4e. Internet Search Detection
   if (!isSpecialRequestHandled) {
     let needsInternetSearch = false;
     let internetQuery = "";
@@ -338,7 +376,7 @@ export async function getWillyResponse(userMessageContent) {
     }
   }
 
-  // 4e. Memory Recall Detection
+  // 4f. Memory Recall Detection
   if (!isSpecialRequestHandled) {
     const wantsToRecall = RECALL_KEYWORDS.some(keyword => userMessageLower.includes(keyword));
     if (wantsToRecall) {

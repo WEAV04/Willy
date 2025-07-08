@@ -95,6 +95,222 @@ export async function buscarMensajesPorPalabraClave(userId, keyword) {
 }
 
 /**
+ * Obtiene patrones emocionales por etapa del mes.
+ * @param {string} userId - ID del usuario.
+ * @returns {Promise<object>} Objeto con emociones contadas por semana del mes.
+ *                            Ej: { "Semana 1": { "alegria": 5 }, "Semana 2": { "ansiedad": 3 } }
+ */
+export async function obtenerPatronesEmocionalesPorEtapaMes(userId) {
+  try {
+    const messages = await obtenerMensajesPorRangoFecha(userId); // Todos los mensajes
+    const patronesPorSemana = {
+      "Semana 1 (días 1-7)": {},
+      "Semana 2 (días 8-14)": {},
+      "Semana 3 (días 15-21)": {},
+      "Semana 4 (días 22-fin de mes)": {} // Cubre hasta el día 31
+    };
+
+    messages.forEach(msg => {
+      if (msg.timestamp && msg.emotion && msg.emotion !== 'neutro' && msg.emotion !== 'otro') {
+        const diaDelMes = msg.timestamp.toDate().getDate();
+        let etapa = "";
+        if (diaDelMes >= 1 && diaDelMes <= 7) etapa = "Semana 1 (días 1-7)";
+        else if (diaDelMes >= 8 && diaDelMes <= 14) etapa = "Semana 2 (días 8-14)";
+        else if (diaDelMes >= 15 && diaDelMes <= 21) etapa = "Semana 3 (días 15-21)";
+        else if (diaDelMes >= 22 && diaDelMes <= 31) etapa = "Semana 4 (días 22-fin de mes)";
+
+        if (etapa) {
+          patronesPorSemana[etapa][msg.emotion] = (patronesPorSemana[etapa][msg.emotion] || 0) + 1;
+        }
+      }
+    });
+
+    // Filtrar etapas sin emociones registradas
+    const resultadoFinal = {};
+    for (const etapa in patronesPorSemana) {
+      if (Object.keys(patronesPorSemana[etapa]).length > 0) {
+        resultadoFinal[etapa] = patronesPorSemana[etapa];
+      }
+    }
+    console.log("[FirestoreService] Patrones emocionales por etapa del mes:", resultadoFinal);
+    return resultadoFinal;
+  } catch (error) {
+    console.error("[FirestoreService] Error al obtener patrones por etapa del mes:", error);
+    throw error;
+  }
+}
+
+/**
+ * Obtiene la correlación entre temas y emociones.
+ * PRECONDICIÓN: Los mensajes deben tener el campo 'topic' poblado.
+ * @param {string} userId - ID del usuario.
+ * @returns {Promise<Array<{tema: string, emocion: string, frecuencia: number}>>} Lista de correlaciones.
+ */
+export async function obtenerCorrelacionTemaEmocion(userId) {
+  try {
+    const messages = await obtenerMensajesPorRangoFecha(userId); // Todos los mensajes
+    const correlaciones = {}; // Ej: { "trabajo": { "ansiedad": 10, "estres": 5 } }
+
+    messages.forEach(msg => {
+      if (msg.topic && msg.topic.trim() !== "" && msg.emotion && msg.emotion !== 'neutro' && msg.emotion !== 'otro') {
+        if (!correlaciones[msg.topic]) {
+          correlaciones[msg.topic] = {};
+        }
+        correlaciones[msg.topic][msg.emotion] = (correlaciones[msg.topic][msg.emotion] || 0) + 1;
+      }
+    });
+
+    // Convertir a la estructura de array solicitada
+    const resultadoArray = [];
+    for (const tema in correlaciones) {
+      for (const emocion in correlaciones[tema]) {
+        resultadoArray.push({
+          tema: tema,
+          emocion: emocion,
+          frecuencia: correlaciones[tema][emocion]
+        });
+      }
+    }
+    // Opcional: ordenar por frecuencia descendente
+    resultadoArray.sort((a, b) => b.frecuencia - a.frecuencia);
+
+    console.log("[FirestoreService] Correlación Tema-Emoción:", resultadoArray);
+    return resultadoArray;
+  } catch (error) {
+    console.error("[FirestoreService] Error al obtener correlación tema-emoción:", error);
+    throw error;
+  }
+}
+
+/**
+ * Predice (basado en patrones históricos simples) el estado emocional para una fecha objetivo
+ * o para un número de días futuros.
+ * Incorpora análisis por día de semana y etapa del mes.
+ * @param {string} userId - ID del usuario.
+ * @param {Date} [fechaObjetivo] - La fecha específica para la cual se quiere la predicción.
+ * @param {number} [numDiasFuturo] - Número de días a futuro para analizar (si no se da fechaObjetivo específica lejana).
+ * @returns {Promise<object>} Objeto con la "predicción" y comentarios.
+ */
+export async function predecirEstadoEmocional(userId, fechaObjetivo, numDiasFuturo) {
+  try {
+    const patronesPorDiaSemana = await obtenerPatronesEmocionalesPorDiaSemana(userId);
+    const patronesPorEtapaMes = await obtenerPatronesEmocionalesPorEtapaMes(userId);
+    let prediccionesConsolidadas = []; // Para guardar predicciones de varios días si numDiasFuturo > 0
+
+    if (numDiasFuturo && numDiasFuturo > 0) {
+      const hoy = new Date();
+      for (let i = 0; i < numDiasFuturo; i++) {
+        const diaAnalizar = new Date(hoy);
+        diaAnalizar.setDate(hoy.getDate() + i);
+
+        const diaSemana = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"][diaAnalizar.getDay()];
+        const diaDelMes = diaAnalizar.getDate();
+        let etapaMes = "";
+        if (diaDelMes >= 1 && diaDelMes <= 7) etapaMes = "Semana 1 (días 1-7)";
+        else if (diaDelMes >= 8 && diaDelMes <= 14) etapaMes = "Semana 2 (días 8-14)";
+        else if (diaDelMes >= 15 && diaDelMes <= 21) etapaMes = "Semana 3 (días 15-21)";
+        else etapaMes = "Semana 4 (días 22-fin de mes)";
+
+        const emocionesDiaSemana = patronesPorDiaSemana[diaSemana] || {};
+        const emocionesEtapaMes = patronesPorEtapaMes[etapaMes] || {};
+
+        // Consolidar información (muy simplificado por ahora)
+        // Se podrían sumar "pesos" o buscar emociones negativas predominantes
+        let comentarioDia = `Para el ${diaSemana} ${diaAnalizar.toLocaleDateString()}: `;
+        let emocionesNotables = [];
+
+        Object.keys(emocionesDiaSemana).forEach(em => {
+          if (emocionesDiaSemana[em] > 1) { // Umbral simple
+            emocionesNotables.push(`históricamente los ${diaSemana} has sentido ${em}`);
+          }
+        });
+        Object.keys(emocionesEtapaMes).forEach(em => {
+           if (emocionesEtapaMes[em] > 1 && !emocionesNotables.some(n => n.includes(em))) { // Evitar duplicar si ya se mencionó por día de semana
+            emocionesNotables.push(`en la ${etapaMes} a veces sientes ${em}`);
+          }
+        });
+
+        if (emocionesNotables.length > 0) {
+          comentarioDia += emocionesNotables.join(', y ') + ". ";
+        } else {
+          comentarioDia += "No observo patrones emocionales muy marcados históricamente para este día. ";
+        }
+        prediccionesConsolidadas.push(comentarioDia);
+      }
+
+      if (prediccionesConsolidadas.length > 0) {
+        return {
+          fechaContexto: `los próximos ${numDiasFuturo} días`,
+          comentario: "Analizando los próximos días:\n" + prediccionesConsolidadas.join("\n") + "\n¿Te gustaría prepararte para alguno de estos momentos o charlar sobre cómo te sientes al respecto?",
+          prediccionesDetalladas: prediccionesConsolidadas // Para posible uso futuro
+        };
+      } else {
+        return {
+          fechaContexto: `los próximos ${numDiasFuturo} días`,
+          comentario: "No encontré patrones históricos muy definidos para los próximos días. ¡Aprovechemos para crear buenos momentos!"
+        };
+      }
+
+    } else if (fechaObjetivo) {
+      // Lógica existente para una fecha específica (ya implementada en Fase 1 y podría mejorarse aquí)
+      // Reutilizar y mejorar la lógica de Fase 1, ahora podría incluir etapa del mes.
+      const diaSemana = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"][fechaObjetivo.getDay()];
+      const diaDelMes = fechaObjetivo.getDate();
+      let etapaMes = "";
+      if (diaDelMes >= 1 && diaDelMes <= 7) etapaMes = "Semana 1 (días 1-7)";
+      else if (diaDelMes >= 8 && diaDelMes <= 14) etapaMes = "Semana 2 (días 8-14)";
+      else if (diaDelMes >= 15 && diaDelMes <= 21) etapaMes = "Semana 3 (días 15-21)";
+      else etapaMes = "Semana 4 (días 22-fin de mes)";
+
+      const emocionesDiaSemana = patronesPorDiaSemana[diaSemana] || {};
+      const emocionesEtapaMes = patronesPorEtapaMes[etapaMes] || {};
+
+      let comentario = `Para el ${diaSemana} ${fechaObjetivo.toLocaleDateString()}: `;
+      const emocionesObservadas = {...emocionesDiaSemana};
+      for(const em in emocionesEtapaMes) {
+          emocionesObservadas[em] = (emocionesObservadas[em] || 0) + emocionesEtapaMes[em];
+      }
+
+      if (Object.keys(emocionesObservadas).length === 0) {
+          return {
+              fechaContexto: `el ${diaSemana} ${fechaObjetivo.toLocaleDateString()}`,
+              emocionesObservadasHistoricamente: {},
+              comentario: `No tengo suficientes datos históricos para el ${diaSemana} ${fechaObjetivo.toLocaleDateString()} como para identificar un patrón claro.`
+          };
+      }
+      const sortedEmociones = Object.entries(emocionesObservadas).sort(([,a],[,b]) => b-a);
+      const emocionMasFrecuente = sortedEmociones.length > 0 ? sortedEmociones[0][0] : "varias emociones";
+
+      comentario += `históricamente, en días como este (${diaSemana}, ${etapaMes}), a menudo has sentido ${emocionMasFrecuente}. Es una posibilidad a tener en cuenta. ¿Quieres que hablemos sobre cómo te sientes al respecto o cómo podrías prepararte?`;
+
+      const totalOcurrencias = Object.values(emocionesObservadas).reduce((s,c)=>s+c,0);
+      const emocionesProbables = {};
+      if(totalOcurrencias > 0) {
+        for(const em in emocionesObservadas) {
+            emocionesProbables[em] = parseFloat((emocionesObservadas[em]/totalOcurrencias).toFixed(2));
+        }
+      }
+
+      return {
+        fechaContexto: `el ${diaSemana} ${fechaObjetivo.toLocaleDateString()} (${etapaMes})`,
+        emocionesObservadasHistoricamente: emocionesObservadas,
+        emocionesProbables,
+        comentario
+      };
+    } else {
+      // Comportamiento por defecto si no hay fecha ni numDiasFuturo (podría ser patrón general del día actual)
+      // Reutilizar la lógica de Fase 1 para el día actual como fallback.
+      const hoy = new Date();
+      return predecirEstadoEmocional(userId, hoy); // Llama a sí mismo con la fecha de hoy
+    }
+
+  } catch (error) {
+    console.error("[FirestoreService] Error al predecir estado emocional (Fase 2):", error);
+    throw error;
+  }
+}
+
+/**
  * Obtiene patrones emocionales por día de la semana.
  * @param {string} userId - ID del usuario.
  * @returns {Promise<object>} Un objeto con emociones contadas por día. Ej: { "Lunes": { "ansiedad": 10 } }
