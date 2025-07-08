@@ -1,6 +1,8 @@
 import axios from 'axios';
 import { systemPrompt } from '../config/personalityPrompt';
 import { addMessage, getMessagesByKeyword, getLastMessages } from '../lib/memory';
+// Import fetchAndParseDDG instead of buscarEnInternet if view_text_website is to be used by the agent
+import { fetchAndParseDDG } from '../lib/internet'; // Using the function designed for view_text_website
 
 const OPENAI_API_KEY = 'TU_API_KEY_AQUI'; // Reemplaza con la clave real
 const MOCK_USER_ID = 'user123'; // Placeholder for user identification
@@ -57,31 +59,31 @@ export async function getWillyResponse(userMessageContent) {
     }
   }
 
-  // Obtener los últimos mensajes para construir el historial del prompt (ej. últimos 5 intercambios)
-  const recentMessagesFromMemory = getLastMessages(MOCK_USER_ID, 10); // Obtener los últimos 10 mensajes (user y willy)
+  // 3. Obtener los últimos mensajes para construir el historial del prompt
+  const recentMessagesFromMemory = getLastMessages(MOCK_USER_ID, 10);
 
-  // Filtrar para que solo los mensajes de 'user' y 'assistant' (Willy) se pasen a la API
-  // y asegurarse de que el mensaje actual del usuario no se duplique si ya fue guardado por addMessage.
   conversationHistoryForPrompt = recentMessagesFromMemory
     .filter(msg => msg.role === 'user' || msg.role === 'willy')
     .map(msg => ({
-      role: msg.role === 'willy' ? 'assistant' : msg.role, // OpenAI usa 'assistant'
+      role: msg.role === 'willy' ? 'assistant' : msg.role,
       content: msg.message
     }));
 
-  // Asegurarse de que el mensaje actual del usuario esté al final, si no fue incluido ya
-  // (getLastMessages podría no incluirlo si se llama antes de que se guarde)
-  // La lógica actual guarda el mensaje del usuario ANTES de llamar a getLastMessages,
-  // por lo que ya debería estar incluido.
+  // Construir el system prompt final
+  let finalSystemPrompt = systemPrompt;
+  if (memoryContext) {
+    finalSystemPrompt += "\n\n--- Información de nuestra conversación anterior ---\n" + memoryContext;
+  }
+  if (internetContext) {
+    finalSystemPrompt += "\n\n--- Información relevante de internet ---\n" + internetContext;
+  }
 
   const messagesForAPI = [
-    { role: 'system', content: systemPrompt + (memoryContext ? "\n\n" + memoryContext : "") },
-    ...conversationHistoryForPrompt, // Esto ya incluye el mensaje actual del usuario
-    // El mensaje del usuario ya está en conversationHistoryForPrompt porque addMessage se llama antes
-    // { role: 'user', content: userMessageContent } // No es necesario si getLastMessages lo incluye
+    { role: 'system', content: finalSystemPrompt },
+    ...conversationHistoryForPrompt,
   ];
 
-  // console.log("Messages for API:", JSON.stringify(messagesForAPI, null, 2));
+  console.log("[api/openai.js] Messages for API:", JSON.stringify(messagesForAPI, null, 2));
 
 
   try {
