@@ -94,6 +94,111 @@ export async function buscarMensajesPorPalabraClave(userId, keyword) {
   }
 }
 
+/**
+ * Obtiene patrones emocionales por día de la semana.
+ * @param {string} userId - ID del usuario.
+ * @returns {Promise<object>} Un objeto con emociones contadas por día. Ej: { "Lunes": { "ansiedad": 10 } }
+ */
+export async function obtenerPatronesEmocionalesPorDiaSemana(userId) {
+  try {
+    const messages = await obtenerMensajesPorRangoFecha(userId); // Obtener todos los mensajes
+    const patronesPorDia = {
+      0: {}, 1: {}, 2: {}, 3: {}, 4: {}, 5: {}, 6: {} // Domingo (0) a Sábado (6)
+    };
+    const nombresDias = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
+
+    messages.forEach(msg => {
+      if (msg.timestamp && msg.emotion && msg.emotion !== 'neutro' && msg.emotion !== 'otro') {
+        const diaSemana = msg.timestamp.toDate().getDay(); // 0 para Domingo, 1 para Lunes, etc.
+        patronesPorDia[diaSemana][msg.emotion] = (patronesPorDia[diaSemana][msg.emotion] || 0) + 1;
+      }
+    });
+
+    // Convertir a nombres de días y filtrar días sin emociones registradas
+    const resultadoFinal = {};
+    for (const diaNum in patronesPorDia) {
+      if (Object.keys(patronesPorDia[diaNum]).length > 0) {
+        resultadoFinal[nombresDias[diaNum]] = patronesPorDia[diaNum];
+      }
+    }
+    console.log("[FirestoreService] Patrones emocionales por día de semana:", resultadoFinal);
+    return resultadoFinal;
+  } catch (error) {
+    console.error("[FirestoreService] Error al obtener patrones por día de semana:", error);
+    throw error;
+  }
+}
+
+
+/**
+ * Predice (basado en patrones históricos simples) el estado emocional para una fecha objetivo.
+ * Fase 1: Se basa solo en el día de la semana de la fecha objetivo.
+ * @param {string} userId - ID del usuario.
+ * @param {Date} [fechaObjetivo] - La fecha para la cual se quiere la predicción (opcional).
+ * @returns {Promise<object>} Objeto con la "predicción".
+ */
+export async function predecirEstadoEmocional(userId, fechaObjetivo) {
+  try {
+    const patronesPorDia = await obtenerPatronesEmocionalesPorDiaSemana(userId);
+    let diaSemanaObjetivo;
+    let fechaContexto;
+
+    if (fechaObjetivo) {
+      diaSemanaObjetivo = fechaObjetivo.getDay(); // 0 para Domingo, 1 para Lunes...
+      const nombresDias = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
+      fechaContexto = `el ${nombresDias[diaSemanaObjetivo]} ${fechaObjetivo.toLocaleDateString()}`;
+    } else {
+      // Si no hay fecha objetivo, podríamos analizar el "próximo día similar" o un patrón general.
+      // Por ahora, si no hay fecha, devolvemos un mensaje genérico o el patrón del día más frecuente en emociones.
+      // Simplificación: tomar el día actual para el ejemplo si no se provee fechaObjetivo.
+      const hoy = new Date();
+      diaSemanaObjetivo = hoy.getDay();
+      fechaContexto = "hoy (o días similares)";
+    }
+
+    const nombreDia = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"][diaSemanaObjetivo];
+    const emocionesObservadasHistoricamente = patronesPorDia[nombreDia] || {};
+
+    if (Object.keys(emocionesObservadasHistoricamente).length === 0) {
+      return {
+        fechaContexto,
+        emocionesObservadasHistoricamente: {},
+        comentario: `No tengo suficientes datos históricos para los ${nombreDia} como para identificar un patrón emocional claro.`
+      };
+    }
+
+    // Encontrar la emoción más frecuente para ese día
+    const sortedEmocionesDia = Object.entries(emocionesObservadasHistoricamente).sort(([,a],[,b]) => b-a);
+    const emocionMasFrecuente = sortedEmocionesDia.length > 0 ? sortedEmocionesDia[0][0] : null;
+
+    let comentario = `Analizando los patrones, los ${nombreDia} a menudo has sentido ${emocionMasFrecuente}. `;
+    if (fechaObjetivo) {
+        comentario += `Dado que el ${fechaObjetivo.toLocaleDateString()} es ${nombreDia}, existe la posibilidad de que sientas algo similar. `;
+    } else {
+        comentario += `Es algo a tener en cuenta para días como hoy. `;
+    }
+    comentario += `¿Te gustaría que pensemos juntos en cómo prepararte o afrontar esto si surge?`;
+
+    // Convertir conteos a proporciones/probabilidades simples (esto es una heurística, no probabilidad real)
+    const totalOcurrenciasDia = Object.values(emocionesObservadasHistoricamente).reduce((sum, count) => sum + count, 0);
+    const emocionesProbables = {};
+    for (const em in emocionesObservadasHistoricamente) {
+      emocionesProbables[em] = parseFloat((emocionesObservadasHistoricamente[em] / totalOcurrenciasDia).toFixed(2));
+    }
+
+    return {
+      fechaContexto,
+      emocionesObservadasHistoricamente, // Podríamos devolver esto para más detalle
+      emocionesProbables, // O las "probabilidades"
+      comentario
+    };
+
+  } catch (error) {
+    console.error("[FirestoreService] Error al predecir estado emocional:", error);
+    throw error;
+  }
+}
+
 
 /**
  * Helper function to count emotion frequencies from a list of messages.

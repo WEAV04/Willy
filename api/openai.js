@@ -7,7 +7,8 @@ import {
     generarResumenEmocional,
     marcarComoMemorable,
     obtenerMomentosMemorables,
-    analizarEvolucionEmocional // Importar la nueva función
+    analizarEvolucionEmocional,
+    predecirEstadoEmocional // Importar la nueva función
 } from '../services/firestoreService.js';
 import { fetchAndParseDDG } from '../lib/internet.js';
 import * as terapiaLogic from '../modules/modo_terapia/logica_modo_terapia.js';
@@ -173,11 +174,11 @@ export async function getWillyResponse(userMessageContent) {
     return willyResponseContent;
   }
 
-  // 4. Standard Operation: Internet Search, Memory Recall, Emotional Summary, Evolution or General Chat
+  // 4. Standard Operation: Internet Search, Memory Recall, Emotional Summary, Evolution or Predictive Chat
   let memoryContext = "";
   let internetContext = "";
   let finalSystemPrompt = baseSystemPrompt;
-  let isSpecialRequestHandled = false; // Flag to check if a special request (summary, evolution) was handled
+  let isSpecialRequestHandled = false;
 
   if (emocionDetectada && emocionDetectada !== EMOCIONES.NEUTRO && !terapiaLogic.estaEnModoTerapia()) {
     if (esEmocionNegativa(emocionDetectada)) {
@@ -187,63 +188,98 @@ export async function getWillyResponse(userMessageContent) {
     }
   }
 
-  // 4a. Emotional Evolution Request Detection
-  const EVOLUTION_KEYWORDS = ["he mejorado emocionalmente", "cómo he cambiado", "evolución emocional", "más tranquilo ahora que antes", "mi progreso emocional"];
-  if (EVOLUTION_KEYWORDS.some(keyword => userMessageLower.includes(keyword))) {
+  // Order of Special Operations: Predictive -> Evolution -> Summary -> Internet -> Recall
+
+  // 4a. Predictive Analysis Request
+  const PREDICTIVE_KEYWORDS = ["cómo crees que me sentiré", "anticipar emocionalmente", "qué días suelo estar", "predicción emocional", "patrón emocional para"];
+  if (!isSpecialRequestHandled && PREDICTIVE_KEYWORDS.some(keyword => userMessageLower.includes(keyword))) {
     isSpecialRequestHandled = true;
-    console.log("[api/openai.js] Solicitud de evolución emocional detectada.");
+    console.log("[api/openai.js] Solicitud de predicción/patrón emocional detectada.");
+    let fechaObjetivo = null;
+    // Simple date parsing for "próxima semana", "próximo lunes", etc.
+    if (userMessageLower.includes("próxima semana") || userMessageLower.includes("semana que viene")) {
+        fechaObjetivo = new Date();
+        fechaObjetivo.setDate(fechaObjetivo.getDate() + 7);
+    } else if (userMessageLower.match(/próximo lunes|lunes que viene/)) {
+        fechaObjetivo = new Date();
+        while (fechaObjetivo.getDay() !== 1) { fechaObjetivo.setDate(fechaObjetivo.getDate() + 1); }
+    } // Add more specific date parsers as needed...
 
-    let rango1 = {}, rango2 = null;
-    // Parse date ranges (simplified - focusing on "este mes" vs "mes anterior" or "este mes" trend)
-    // TODO: More robust date parsing for flexible user queries.
-    if (userMessageLower.includes("este mes vs") || userMessageLower.includes("este mes comparado con")) {
-        const hoy = new Date();
-        rango1.fechaInicio = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
-        rango1.fechaFin = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0); // Last day of current month
+    const prediccionData = await predecirEstadoEmocional(MOCK_USER_ID, fechaObjetivo);
+    const systemPromptForPrediction = baseSystemPrompt +
+        `\n\n[Instrucción especial: El usuario ha pedido un análisis de patrones o una 'predicción' emocional. Aquí tienes los datos del análisis: ${JSON.stringify(prediccionData)}. ` +
+        `Comunica esta información con mucho tacto y cuidado, enfatizando que son patrones pasados y no certezas futuras. ` +
+        `Usa el 'comentario' de los datos como base y ofrece apoyo o la opción de pensar en estrategias si se anticipa una emoción difícil.]`;
 
-        rango2 = {};
-        const mesAnterior = new Date(hoy.getFullYear(), hoy.getMonth() - 1, 1);
-        rango2.fechaInicio = new Date(mesAnterior.getFullYear(), mesAnterior.getMonth(), 1);
-        rango2.fechaFin = new Date(mesAnterior.getFullYear(), mesAnterior.getMonth() + 1, 0);
-    } else if (userMessageLower.includes("este mes") || userMessageLower.includes("último mes")) { // Trend within this month
-        const hoy = new Date();
-        rango1.fechaInicio = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
-        rango1.fechaFin = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0);
-    } else { // Default to last 30 days if no specific month term found
-        rango1.fechaFin = new Date();
-        rango1.fechaInicio = new Date();
-        rango1.fechaInicio.setDate(rango1.fechaFin.getDate() - 29);
-        rango1.fechaInicio.setHours(0,0,0,0);
-    }
-
-    const evolucionData = await analizarEvolucionEmocional(MOCK_USER_ID, rango1, rango2);
-    const systemPromptForEvolution = baseSystemPrompt +
-        `\n\n[Instrucción especial: El usuario ha pedido un análisis de su evolución emocional. Aquí tienes los datos del análisis: ${JSON.stringify(evolucionData)}. ` +
-        `Explícale esta evolución de manera comprensiva, cálida y humana. Usa el campo 'comentario' como base, pero siéntete libre de expandirlo con tu propia voz empática, ` +
-        `destacando cambios positivos y ofreciendo apoyo si se observan desafíos. Menciona los periodos comparados si es relevante.]`;
-
-    const recentMessagesForEvolution = (await obtenerMensajesRecientes(MOCK_USER_ID, 3)).map(msg => ({
+    const recentMessagesForPrediction = (await obtenerMensajesRecientes(MOCK_USER_ID, 3)).map(msg => ({
         role: msg.role === 'willy' ? 'assistant' : 'user', content: msg.message
     }));
-    const messagesForAPIEvolution = [
-        { role: 'system', content: systemPromptForEvolution },
-        ...recentMessagesForEvolution,
+    const messagesForAPIPrediction = [
+        { role: 'system', content: systemPromptForPrediction },
+        ...recentMessagesForPrediction,
         { role: 'user', content: userMessageContent }
     ];
-
     try {
         const response = await axios.post('https://api.openai.com/v1/chat/completions', {
-            model: 'gpt-4o', messages: messagesForAPIEvolution, temperature: 0.7, max_tokens: 1000,
+            model: 'gpt-4o', messages: messagesForAPIPrediction, temperature: 0.7, max_tokens: 1000,
         }, { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' }});
         willyResponseContent = response.data.choices[0].message.content;
     } catch (error) {
-        console.error('Error al obtener respuesta de Willy (evolución emocional):', error.response ? error.response.data : error.message);
-        willyResponseContent = "Pude analizar tu evolución emocional, pero tuve un problema al expresarlo. Aquí está el comentario principal del análisis:\n" + (evolucionData.comentario || "No se pudo generar un comentario detallado.");
+        console.error('Error al obtener respuesta de Willy (predicción emocional):', error.response ? error.response.data : error.message);
+        willyResponseContent = "Pude analizar tus patrones emocionales, pero tuve un problema al expresarlo. El análisis sugiere: " + (prediccionData.comentario || "No se pudo generar un comentario detallado.");
     }
   }
 
+  // 4b. Emotional Evolution Request Detection
+  if (!isSpecialRequestHandled) {
+    const EVOLUTION_KEYWORDS = ["he mejorado emocionalmente", "cómo he cambiado", "evolución emocional", "más tranquilo ahora que antes", "mi progreso emocional"];
+    if (EVOLUTION_KEYWORDS.some(keyword => userMessageLower.includes(keyword))) {
+      isSpecialRequestHandled = true;
+      console.log("[api/openai.js] Solicitud de evolución emocional detectada.");
+      let rango1 = {}, rango2 = null;
+      if (userMessageLower.includes("este mes vs") || userMessageLower.includes("este mes comparado con")) {
+          const hoy = new Date();
+          rango1.fechaInicio = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+          rango1.fechaFin = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0);
+          rango2 = {};
+          const mesAnterior = new Date(hoy.getFullYear(), hoy.getMonth() - 1, 1);
+          rango2.fechaInicio = new Date(mesAnterior.getFullYear(), mesAnterior.getMonth(), 1);
+          rango2.fechaFin = new Date(mesAnterior.getFullYear(), mesAnterior.getMonth() + 1, 0);
+      } else if (userMessageLower.includes("este mes") || userMessageLower.includes("último mes")) {
+          const hoy = new Date();
+          rango1.fechaInicio = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+          rango1.fechaFin = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0);
+      } else {
+          rango1.fechaFin = new Date();
+          rango1.fechaInicio = new Date();
+          rango1.fechaInicio.setDate(rango1.fechaFin.getDate() - 29);
+          rango1.fechaInicio.setHours(0,0,0,0);
+      }
+      const evolucionData = await analizarEvolucionEmocional(MOCK_USER_ID, rango1, rango2);
+      const systemPromptForEvolution = baseSystemPrompt +
+          `\n\n[Instrucción especial: El usuario ha pedido un análisis de su evolución emocional. Aquí tienes los datos: ${JSON.stringify(evolucionData)}. ` +
+          `Explícale esto de manera comprensiva y cálida. Usa el 'comentario' como base, pero siéntete libre de expandirlo. ` +
+          `Destaca cambios positivos y ofrece apoyo si se observan desafíos.]`;
+      const recentMessagesForEvolution = (await obtenerMensajesRecientes(MOCK_USER_ID, 3)).map(msg => ({
+          role: msg.role === 'willy' ? 'assistant' : 'user', content: msg.message
+      }));
+      const messagesForAPIEvolution = [
+          { role: 'system', content: systemPromptForEvolution },
+          ...recentMessagesForEvolution, { role: 'user', content: userMessageContent }
+      ];
+      try {
+          const response = await axios.post('https://api.openai.com/v1/chat/completions', {
+              model: 'gpt-4o', messages: messagesForAPIEvolution, temperature: 0.7, max_tokens: 1000,
+          }, { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' }});
+          willyResponseContent = response.data.choices[0].message.content;
+      } catch (error) {
+          console.error('Error al obtener respuesta de Willy (evolución emocional):', error.response ? error.response.data : error.message);
+          willyResponseContent = "Pude analizar tu evolución, pero tuve un problema al expresarlo. El análisis indica: " + (evolucionData.comentario || "No se pudo generar un comentario.");
+      }
+    }
+  }
 
-  // 4b. Emotional Summary Request Detection (if not evolution)
+  // 4c. Emotional Summary Request Detection
   if (!isSpecialRequestHandled) {
     const SUMMARY_KEYWORDS = ["cómo he estado", "resumen emocional", "emociones he sentido", "estado emocional", "mis emociones últimamente"];
     if (SUMMARY_KEYWORDS.some(keyword => userMessageLower.includes(keyword))) {
@@ -251,26 +287,19 @@ export async function getWillyResponse(userMessageContent) {
       console.log("[api/openai.js] Solicitud de resumen emocional detectada.");
       let fechaInicio, fechaFin;
       if (userMessageLower.includes("última semana") || userMessageLower.includes("esta semana")) {
-        fechaFin = new Date();
-        fechaInicio = new Date();
-        fechaInicio.setDate(fechaFin.getDate() - 6);
-        fechaInicio.setHours(0,0,0,0);
+        fechaFin = new Date(); fechaInicio = new Date(); fechaInicio.setDate(fechaFin.getDate() - 6); fechaInicio.setHours(0,0,0,0);
       } else if (userMessageLower.includes("último mes")) {
-        fechaFin = new Date();
-        fechaInicio = new Date();
-        fechaInicio.setMonth(fechaFin.getMonth() - 1);
-        fechaInicio.setHours(0,0,0,0);
+        fechaFin = new Date(); fechaInicio = new Date(); fechaInicio.setMonth(fechaFin.getMonth() - 1); fechaInicio.setHours(0,0,0,0);
       }
       const resumenTexto = await generarResumenEmocional(MOCK_USER_ID, fechaInicio, fechaFin);
       const systemPromptForSummary = baseSystemPrompt +
-          `\n\n[Instrucción especial: El usuario ha pedido un resumen de su estado emocional. Aquí tienes los datos: "${resumenTexto}". Por favor, preséntale esta información de una manera cálida, reflexiva y humana. Puedes ofrecer una perspectiva gentil o una pregunta abierta sobre cómo se siente al ver este resumen. No inventes datos, solo usa la información proporcionada.]`;
+          `\n\n[Instrucción especial: El usuario ha pedido un resumen de su estado emocional. Datos: "${resumenTexto}". Preséntalo de forma cálida y reflexiva. Ofrece una perspectiva gentil o una pregunta abierta.]`;
       const recentMessagesForSummary = (await obtenerMensajesRecientes(MOCK_USER_ID, 5)).map(msg => ({
           role: msg.role === 'willy' ? 'assistant' : 'user', content: msg.message
       }));
       const messagesForAPISummary = [
           { role: 'system', content: systemPromptForSummary },
-          ...recentMessagesForSummary,
-          { role: 'user', content: userMessageContent }
+          ...recentMessagesForSummary, { role: 'user', content: userMessageContent }
       ];
       try {
           const response = await axios.post('https://api.openai.com/v1/chat/completions', {
@@ -278,13 +307,13 @@ export async function getWillyResponse(userMessageContent) {
           }, { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' }});
           willyResponseContent = response.data.choices[0].message.content;
       } catch (error) {
-          console.error('Error al obtener respuesta de Willy (resumen emocional):', error.response ? error.response.data : error.message);
-          willyResponseContent = "Pude generar tu resumen emocional, pero tuve un pequeño problema al intentar expresarlo de forma natural. Aquí están los datos directamente:\n" + resumenTexto;
+          console.error('Error al obtener respuesta de Willy (resumen):', error.response ? error.response.data : error.message);
+          willyResponseContent = "Generé tu resumen, pero tuve un problema al expresarlo. Aquí están los datos:\n" + resumenTexto;
       }
     }
   }
 
-  // 4c. Internet Search Detection (if no special request handled yet)
+  // 4d. Internet Search Detection
   if (!isSpecialRequestHandled) {
     let needsInternetSearch = false;
     let internetQuery = "";
@@ -293,9 +322,7 @@ export async function getWillyResponse(userMessageContent) {
         needsInternetSearch = true;
         let queryCandidate = userMessageContent.substring(userMessageLower.indexOf(keyword) + keyword.length).trim();
         for (const stopWord of INTERNET_QUERY_STOP_WORDS) {
-          if (queryCandidate.toLowerCase().startsWith(stopWord)) {
-            queryCandidate = queryCandidate.substring(stopWord.length).trim();
-          }
+          if (queryCandidate.toLowerCase().startsWith(stopWord)) queryCandidate = queryCandidate.substring(stopWord.length).trim();
         }
         internetQuery = queryCandidate;
         if (internetQuery.endsWith("?")) internetQuery = internetQuery.slice(0, -1);
@@ -303,26 +330,22 @@ export async function getWillyResponse(userMessageContent) {
       }
     }
     if (needsInternetSearch && internetQuery) {
-      isSpecialRequestHandled = true; // Considered handled if it's an internet search
-      console.log(`[api/openai.js] Internet search needed for query: "${internetQuery}"`);
-      if (viewTextWebsiteTool) {
-        internetContext = await fetchAndParseDDG(internetQuery, viewTextWebsiteTool);
-      } else {
-        console.warn("[api/openai.js] viewTextWebsiteTool not available. Internet search will be mocked.");
-        internetContext = await fetchAndParseDDG(internetQuery, null);
-      }
-      finalSystemPrompt += "\n\n--- Información relevante de internet ---\n" + internetContext;
+      isSpecialRequestHandled = true;
+      console.log(`[api/openai.js] Internet search: "${internetQuery}"`);
+      if (viewTextWebsiteTool) internetContext = await fetchAndParseDDG(internetQuery, viewTextWebsiteTool);
+      else { console.warn("viewTextWebsiteTool not available."); internetContext = await fetchAndParseDDG(internetQuery, null); }
+      finalSystemPrompt += "\n\n--- Información de internet ---\n" + internetContext;
     }
   }
 
-  // 4d. Memory Recall Detection (if no special request handled yet)
+  // 4e. Memory Recall Detection
   if (!isSpecialRequestHandled) {
     const wantsToRecall = RECALL_KEYWORDS.some(keyword => userMessageLower.includes(keyword));
     if (wantsToRecall) {
-      isSpecialRequestHandled = true; // Considered handled if it's a memory recall
+      isSpecialRequestHandled = true;
       let searchTerm = "";
-      if (userMessageLower.includes("lo último que hablamos")) {
-      } else {
+      if (userMessageLower.includes("lo último que hablamos")) {}
+      else {
         const aboutMatch = userMessageLower.match(/sobre ([\wáéíóúñ]+)/i);
         if (aboutMatch && aboutMatch[1]) searchTerm = aboutMatch[1];
         else {
@@ -333,25 +356,20 @@ export async function getWillyResponse(userMessageContent) {
       if (searchTerm) {
         const relevantMessagesRaw = await buscarMensajesPorPalabraClave(MOCK_USER_ID, searchTerm);
         if (relevantMessagesRaw.length > 0) {
-          memoryContext = "Para tu referencia, anteriormente hablamos de esto:\n";
+          memoryContext = "Referencia de conversaciones pasadas:\n";
           relevantMessagesRaw.slice(-3).forEach(msg => {
-            const date = msg.timestamp && msg.timestamp.toDate ? msg.timestamp.toDate().toLocaleDateString() : 'una fecha anterior';
+            const date = msg.timestamp && msg.timestamp.toDate ? msg.timestamp.toDate().toLocaleDateString() : 'antes';
             memoryContext += `- (${msg.role === 'user' ? 'Tú' : 'Yo'} el ${date}): "${msg.message}"\n`;
           });
-        } else {
-          memoryContext = `Busqué en mi memoria sobre "${searchTerm}", pero no encontré algo específico. ¿Podrías recordarme un poco más?\n`;
-        }
-      } else if (userMessageLower.includes("lo último que hablamos")) {
-        memoryContext = "Revisando nuestras últimas conversaciones...\n";
-      } else {
-        memoryContext = "Parece que quieres que recuerde algo. ¿Podrías darme más detalles o una palabra clave?\n";
-      }
-      if (memoryContext) finalSystemPrompt += "\n\n--- Información de nuestra conversación anterior ---\n" + memoryContext;
+        } else memoryContext = `Busqué sobre "${searchTerm}", pero no encontré algo específico. ¿Más detalles?\n`;
+      } else if (userMessageLower.includes("lo último que hablamos")) memoryContext = "Revisando lo último...\n";
+      else memoryContext = "Parece que quieres recordar algo. ¿Más detalles?\n";
+      if (memoryContext) finalSystemPrompt += "\n\n--- Memoria ---\n" + memoryContext;
     }
   }
 
-  // 5. Prepare messages for OpenAI API (if response not already set by a special request)
-  if (!willyResponseContent) { // If no special request handled it and set willyResponseContent directly
+  // 5. OpenAI API call if no direct response yet
+  if (!willyResponseContent) {
     const recentMessagesRaw = await obtenerMensajesRecientes(MOCK_USER_ID, 10);
     const recentMessagesForAPI = recentMessagesRaw.map(msg => ({
       role: msg.role === 'willy' ? 'assistant' : msg.role,
