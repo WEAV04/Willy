@@ -20,10 +20,13 @@ import { detectarEmocion } from '../modules/analisis_emocional/detectarEmocion.j
 import { esEmocionNegativa, EMOCIONES } from '../modules/analisis_emocional/emociones_basicas.js';
 import { buscarFraseInspiradora, generarRespuestaFrustracionReflexiva } from '../modules/intervenciones_emocionales/frustracionReflexiva.js';
 import { evaluarSituacionYRecomendar as evaluarSituacionYRecomendarDefensa } from '../modules/defensaSegura.js';
+import { obtenerInfoProfesion } from '../modules/conocimientoProfesional.js';
+import * as Supervisor from '../modules/cameraSupervisor.js'; // Importar el módulo de supervisión
 
 
 const OPENAI_API_KEY = 'TU_API_KEY_AQUI'; // Reemplaza con la clave real
 const MOCK_USER_ID = 'user123'; // Placeholder for user identification, debería ser dinámico
+let currentUserRole = null; // Session-level storage for user's profession/role for MOCK_USER_ID
 
 // Keywords for memory recall
 const RECALL_KEYWORDS = ['recuerdas', 'te acuerdas', 'qué te dije', 'lo que te conté', 'último que hablamos'];
@@ -46,10 +49,84 @@ export async function getWillyResponse(userMessageContent, overrideSystemPrompt 
   let willyResponseContent = "";
   let initialTherapyMessage = "";
 
-  const emocionDetectada = detectarEmocion(userMessageContent);
-  console.log(`[api/openai.js] Emoción detectada para mensaje de usuario: ${emocionDetectada}`);
+  // --- Inicio Manejo de Supervisión Simulada ---
+  // Esta función interna será el callback para el supervisor
+  async function handleSimulatedDetectionEvent(userId, eventDetails) {
+    console.log(`[api/openai.js] Evento de supervisión simulada recibido para ${userId}:`, eventDetails);
 
-  let userMessageId = null;
+    try {
+      await guardarMensajeFirestore({
+        userId: userId,
+        role: 'system_event',
+        message: `(Supervisión Simulada) Evento: ${eventDetails.type} - ${eventDetails.description}`,
+        emotion: null,
+      });
+    } catch (error) {
+      console.error("[api/openai.js] Error guardando evento de supervisión en Firestore:", error);
+    }
+
+    const overrideSystemPromptForEvent = baseSystemPrompt +
+        `\n\n[Instrucción especial: Has 'detectado' un evento simulado mientras supervisabas a petición del usuario. ` +
+        `El evento es: '${eventDetails.description}'. ` +
+        `Tu objetivo es informar al usuario de esta 'detección' simulada de forma calmada y preguntar si todo está bien, ` +
+        `o si quiere 'saber más' (lo cual es solo una forma de continuar la interacción, ya que no hay más detalles reales). ` +
+        `Recuerda enfatizar sutilmente que es una simulación para su tranquilidad, no una alarma real. Pregunta directamente si todo está bien.]`;
+
+    // Para esta simulación, generamos la respuesta que Willy daría y la guardamos en el historial.
+    // En una app real, esto podría disparar una notificación push al usuario.
+    try {
+      const willysReactionToSimulatedEvent = await getWillyResponse(
+          `He 'detectado' algo mientras supervisaba: ${eventDetails.description}`, // Mensaje gatillo interno
+          overrideSystemPromptForEvent // Usar el prompt especializado
+      );
+      console.log(`[api/openai.js] Willy reaccionaría al evento simulado con: ${willysReactionToSimulatedEvent}`);
+      await guardarMensajeFirestore({
+          userId: userId,
+          role: 'willy',
+          message: `(Respuesta a supervisión simulada) ${willysReactionToSimulatedEvent}`,
+          emotion: EMOCIONES.CALMA,
+      });
+      // TODO: Implementar mecanismo para enviar esta `willysReactionToSimulatedEvent` al frontend de forma proactiva.
+    } catch (error) {
+        console.error("[api/openai.js] Error al generar o guardar la reacción de Willy al evento simulado:", error);
+    }
+  }
+
+  const START_SUPERVISION_KEYWORDS = ["vigila mientras descanso", "modo vigilancia", "supervisa por un rato", "estate atento", "cuida la casa", "supervisión pasiva"];
+  const STOP_SUPERVISION_KEYWORDS = ["deja de vigilar", "desactiva vigilancia", "ya no vigiles", "puedes parar la supervisión", "detén la supervisión"];
+
+  if (!overrideSystemPrompt && START_SUPERVISION_KEYWORDS.some(kw => userMessageLower.includes(kw))) {
+    if (Supervisor.isSupervisionOn()) {
+      willyResponseContent = "Ya estoy en modo de atención simulada. Estaré 'alerta' por ti.";
+    } else {
+      Supervisor.startSupervision(MOCK_USER_ID, handleSimulatedDetectionEvent);
+      willyResponseContent = "Entendido. Activaré mi modo de atención simulada. Recuerda, no estoy viendo ni grabando nada realmente, pero estaré 'alerta' para darte tranquilidad. Avísame cuando quieras que me detenga.";
+    }
+    // Guardar el mensaje del usuario y la respuesta de Willy
+    const emocionDetectadaUsuario = detectarEmocion(userMessageContent);
+    await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'user', message: userMessageContent, emotion: emocionDetectadaUsuario });
+    await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'willy', message: willyResponseContent, emotion: EMOCIONES.CALMA });
+    return willyResponseContent;
+  }
+
+  if (!overrideSystemPrompt && STOP_SUPERVISION_KEYWORDS.some(kw => userMessageLower.includes(kw))) {
+    if (Supervisor.isSupervisionOn()) {
+      Supervisor.stopSupervision();
+      willyResponseContent = "De acuerdo, he desactivado el modo de atención simulada. Espero que hayas descansado bien.";
+    } else {
+      willyResponseContent = "No te preocupes, no tenía el modo de atención simulada activo en este momento.";
+    }
+    const emocionDetectadaUsuario = detectarEmocion(userMessageContent);
+    await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'user', message: userMessageContent, emotion: emocionDetectadaUsuario });
+    await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'willy', message: willyResponseContent, emotion: EMOCIONES.CALMA });
+    return willyResponseContent;
+  }
+  // --- Fin Manejo de Supervisión Simulada ---
+
+  const emocionDetectada = detectarEmocion(userMessageContent); // Esto ya estaba, pero asegurar que se use la correcta si no es comando de supervisión
+  console.log(`[api/openai.js] Emoción detectada para mensaje de usuario (post-supervisión check): ${emocionDetectada}`);
+
+  let userMessageId = null; // Ya estaba, asegurar que se use la correcta
   try {
     // GuardarMensajeFirestore ahora devuelve el ID del mensaje guardado.
     userMessageId = await guardarMensajeFirestore({
@@ -240,18 +317,56 @@ export async function getWillyResponse(userMessageContent, overrideSystemPrompt 
   let isSpecialRequestHandled = false; // Flag to check if a special request was handled
   let chartTriggerData = null; // To hold data if a chart needs to be triggered
 
+  // --- Profession/Role Detection and Contextualization ---
+  // Try to detect profession/role from current message
+  const profesionDeclarada = userMessageLower.match(/soy ([\w\s]+)/i) || userMessageLower.match(/trabajo como ([\w\s]+)/i) || userMessageLower.match(/trabajo de ([\w\s]+)/i);
+  if (profesionDeclarada && profesionDeclarada[1]) {
+    const rolDetectado = profesionDeclarada[1].trim().toLowerCase().replace(/\s+/g, '_');
+    // Basic normalization, e.g., "programador de software" -> "programador"
+    // This could be expanded with a more robust mapping if needed.
+    if (rolDetectado.includes("programador")) currentUserRole = "programador";
+    else if (rolDetectado.includes("médico") || rolDetectado.includes("doctor")) currentUserRole = "medico";
+    else if (rolDetectado.includes("psicólogo")) currentUserRole = "psicologo";
+    else if (rolDetectado.includes("arquitecto")) currentUserRole = "arquitecto";
+    else if (rolDetectado.includes("mecánico")) currentUserRole = "mecanico";
+    else if (rolDetectado.includes("padre") && rolDetectado.includes("desempleado")) currentUserRole = "padre_desempleado";
+    else if (rolDetectado.includes("madre") && rolDetectado.includes("joven")) currentUserRole = "madre_joven";
+    else if (rolDetectado.includes("padre") || rolDetectado.includes("madre")) currentUserRole = "padre_madre";
+    else if (rolDetectado.includes("estudiante") && rolDetectado.includes("medicina")) currentUserRole = "estudiante_de_medicina";
+    else if (rolDetectado.includes("estudiante")) currentUserRole = "estudiante";
+    else if (rolDetectado.includes("ama de casa") || rolDetectado.includes("cuidador del hogar")) currentUserRole = "ama_de_casa";
+    else if (rolDetectado.includes("desempleado")) currentUserRole = "desempleado";
+    else if (rolDetectado.includes("repartidor")) currentUserRole = "repartidor_urbano";
+    else if (rolDetectado.includes("vendedor informal") || rolDetectado.includes("ambulante")) currentUserRole = "vendedor_informal";
+    else if (rolDetectado.includes("albañil") || rolDetectado.includes("construcción")) currentUserRole = "albañil";
+    else currentUserRole = rolDetectado; // Store as is if not specifically mapped
+
+    console.log(`[api/openai.js] Profesión/Rol detectado y almacenado para la sesión: ${currentUserRole}`);
+    // In a real multi-user system, this would be saved to a user profile in Firestore.
+  }
+
   // Only add default contexts if not using an overrideSystemPrompt
   if (!overrideSystemPrompt) {
+    if (currentUserRole) {
+        const infoProfesion = obtenerInfoProfesion(currentUserRole);
+        finalSystemPrompt += `\n\n[Contexto Profesional/Rol del Usuario: El usuario se identifica como ${infoProfesion.nombreDisplay}. ` +
+                             `Algunos desafíos comunes pueden ser: ${infoProfesion.commonStressors.slice(0,2).join(', ')}. ` +
+                             `Considera esto al responder, ofreciendo empatía y validación. ` +
+                             `Puedes mencionar sutilmente alguna sugerencia general de bienestar como '${infoProfesion.copingSuggestions[0]}', pero enfócate en el apoyo emocional. ` +
+                             `Si la situación parece requerirlo, recuerda la '${infoProfesion.sugerenciaProfesional}'. No des consejos técnicos específicos.]`;
+    }
     if (emocionDetectada && emocionDetectada !== EMOCIONES.NEUTRO && !terapiaLogic.estaEnModoTerapia()) {
       if (esEmocionNegativa(emocionDetectada)) {
-        finalSystemPrompt += `\n\n[Contexto emocional: El usuario parece sentirse ${emocionDetectada}. Responde con especial empatía y suavidad, validando sus sentimientos si es apropiado, incluso si no pide ayuda explícitamente.]`;
+        finalSystemPrompt += `\n[Contexto emocional: El usuario parece sentirse ${emocionDetectada}. Responde con especial empatía y suavidad, validando sus sentimientos si es apropiado, incluso si no pide ayuda explícitamente.]`;
       } else if (esEmocionPositiva(emocionDetectada)) {
-        finalSystemPrompt += `\n\n[Contexto emocional: El usuario parece sentirse ${emocionDetectada}. Comparte su entusiasmo o responde de manera cálida y acorde.]`;
+        finalSystemPrompt += `\n[Contexto emocional: El usuario parece sentirse ${emocionDetectada}. Comparte su entusiasmo o responde de manera cálida y acorde.]`;
       }
     }
   }
+  // --- Fin de Contextualización Profesional/Rol ---
 
-  // Order of Special Operations: Chart Request -> Mirror -> Predictive -> Evolution -> Summary -> Internet -> Recall
+
+  // Order of Special Operations: Safety Advice -> Chart Request -> Mirror -> Predictive -> Evolution -> Summary -> Internet -> Recall
 
   // Helper function to parse date range for chart/summary requests
   const parseDateRangeForQuery = (queryLower) => {
