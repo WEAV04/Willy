@@ -10,15 +10,23 @@ import { obtenerFraseSupervisionAdaptada, TIPOS_PERSONA_VULNERABLE } from './res
 // import { EMOCIONES } from '../analisis_emocional/emociones_basicas.js'; // Para la emoción de Willy al responder
 
 let supervisionActiva = false;
-let datosPersonaSupervisada = null; // { userIdCuidador, nombrePersona, tipoPersona, contextoAdicional, nombreCuidador, parentescoCuidador }
+let datosPersonaSupervisada = null; // { userIdCuidador, nombrePersona, tipoPersona, contextoAdicional, nombreCuidador, parentescoCuidador, contactoEmergencia: { nombre: '', telefono: ''} }
+let timerNoRespuestaId = null; // ID para el temporizador de no respuesta
 
 // Palabras clave de riesgo que podrían indicar que la persona supervisada necesita ayuda.
-// Estas son generales; se podrían refinar por tipoPersona si es necesario.
 const FRASES_RIESGO_PERSONA_SUPERVISADA = [
-  "me siento mal", "me duele mucho", "tengo miedo", "no puedo respirar",
-  "ayúdame", "socorro", "necesito ayuda urgente", "me caí", "estoy solo y asustado",
-  "no quiero estar solo", "tengo mucho frío", "tengo mucha hambre", "no me hacen caso"
+  "me siento mal", "me duele mucho", "tengo miedo", "no puedo respirar", "ayúdame",
+  "socorro", "necesito ayuda urgente", "me caí", "estoy solo y asustado", "no quiero estar solo",
+  "tengo mucho frío", "tengo mucha hambre", "no me hacen caso", "me he caído", "ayuda por favor"
 ];
+
+// Contacto de emergencia (simulado, en una app real se configuraría por usuario)
+// Esta es una SIMULACIÓN. En una app real, esto se cargaría del perfil del cuidador.
+const CONTACTO_EMERGENCIA_SIMULADO = {
+    nombre: "Contacto de Emergencia (Ej: Ana)",
+    telefono: "123-456-7890", // Número de ejemplo
+    relacion: "familiar"
+};
 
 
 /**
@@ -41,12 +49,13 @@ export function iniciarSupervision(userIdCuidador, tipoPersona, nombrePersona, c
     nombrePersona: nombrePersona || "la persona que acompañas",
     tipoPersona: tipoPersona || TIPOS_PERSONA_VULNERABLE.GENERAL_VULNERABLE,
     contextoAdicional,
-    nombreCuidador: nombreCuidador || "la persona que te cuida", // Nombre del cuidador para mensajes a la persona supervisada
-    parentescoCuidador: parentescoCuidador || "quien te cuida" // Parentesco para mensajes a la persona supervisada
+    nombreCuidador: nombreCuidador || "la persona que te cuida",
+    parentescoCuidador: parentescoCuidador || "quien te cuida",
+    // Simulación: Cargar el contacto de emergencia del cuidador. En un sistema real, esto se haría desde el perfil del cuidador.
+    contactoEmergencia: CONTACTO_EMERGENCIA_SIMULADO // Usar el simulado por ahora
   };
   console.log("[modo_supervision_vulnerable] Supervisión iniciada:", datosPersonaSupervisada);
 
-  // Mensaje para el CUIDADOR que activó el modo
   let mensajeConfirmacion = `Entendido. Activaré un modo de acompañamiento especial para ${datosPersonaSupervisada.nombrePersona}. `;
   mensajeConfirmacion += `Estaré atento/a a lo que me comuniques sobre ${datosPersonaSupervisada.nombrePersona} o si ${datosPersonaSupervisada.nombrePersona} interactúa directamente. `;
   mensajeConfirmacion += `Recuerda que mi supervisión es a través de nuestra conversación y no tengo acceso a sensores ni cámaras; la seguridad real depende de ti.`;
@@ -62,6 +71,11 @@ export function detenerSupervision(userIdCuidador) {
   if (!supervisionActiva || (datosPersonaSupervisada && datosPersonaSupervisada.userIdCuidador !== userIdCuidador) ) {
     return "No había una supervisión activa para detener, o no fue iniciada por ti.";
   }
+  if (timerNoRespuestaId) {
+    clearTimeout(timerNoRespuestaId);
+    timerNoRespuestaId = null;
+    console.log("[modo_supervision_vulnerable] Temporizador de no respuesta cancelado.");
+  }
   const nombrePersona = datosPersonaSupervisada.nombrePersona;
   supervisionActiva = false;
   datosPersonaSupervisada = null;
@@ -69,33 +83,40 @@ export function detenerSupervision(userIdCuidador) {
   return `De acuerdo. He desactivado el modo de acompañamiento especial para ${nombrePersona}.`;
 }
 
-/**
- * Obtiene los datos de la persona actualmente bajo supervisión.
- * @returns {object|null}
- */
 export function obtenerDatosSupervision() {
   return supervisionActiva ? datosPersonaSupervisada : null;
 }
 
 /**
- * Genera una respuesta de Willy como cuidador, adaptada a la persona supervisada.
- * Esta función es llamada cuando se asume que el mensaje proviene de la persona supervisada,
- * o cuando el cuidador transmite un mensaje de ella.
- * @param {string} mensajePersonaSupervisada - El mensaje de la persona supervisada.
- * @param {string|null} emocionDetectada - La emoción detectada en el mensaje.
- * @param {object} datosDeSupervision - Objeto con { nombrePersona, tipoPersona, nombreCuidador, parentescoCuidador }.
- * @returns {object} Un objeto { willyMessage: string, needsOpenAIPhrasing: boolean, furtherContextForOpenAI?: string, suggestedAction?: string }
+ * Prepara el mensaje de alerta para el contacto de emergencia.
+ * @param {object} datosSupervisados - Los datos de la persona supervisada.
+ * @param {string} [ultimaInteraccion="No hubo interacción reciente antes de la alerta."] - Último mensaje o contexto.
+ * @returns {string} Mensaje de alerta.
  */
+export function prepararMensajeAlertaEmergencia(datosSupervisados, ultimaInteraccion = "No hubo interacción reciente antes de la alerta.") {
+    const { nombrePersona, tipoPersona, contactoEmergencia } = datosSupervisados;
+    if (!contactoEmergencia || !contactoEmergencia.nombre) {
+        console.warn("[modo_supervision_vulnerable] No hay contacto de emergencia configurado para enviar alerta.");
+        return `Alerta para ${datosSupervisados.nombreCuidador}: Se detectó una posible situación de riesgo con ${nombrePersona} y no hubo respuesta. Por favor, verifica su estado. (No hay contacto de emergencia específico configurado).`;
+    }
+    return `Hola ${contactoEmergencia.nombre}, soy Willy, el asistente emocional. ` +
+           `Estoy en modo de acompañamiento para ${nombrePersona} (${tipoPersona}) y se ha detectado una situación que podría requerir tu atención ` +
+           `(basado en una falta de respuesta tras una posible alerta o frase de riesgo: "${ultimaInteraccion}"). ` +
+           `Por favor, intenta contactar o verificar el estado de ${nombrePersona} lo antes posible. ` +
+           `Recuerda, esta es una notificación generada por un sistema de IA como medida de precaución.`;
+}
+
+
 export function responderComoCuidador(mensajePersonaSupervisada, emocionDetectada, datosDeSupervision) {
   const mensajeLower = mensajePersonaSupervisada.toLowerCase();
   let willyMessage = "";
-  let needsOpenAIPhrasing = false; // Por defecto, las respuestas guiadas son directas
+  let needsOpenAIPhrasing = true;
   let furtherContextForOpenAI = "";
-  let suggestedAction = "CONTINUE_CONVERSATION";
+  let suggestedAction = "CONTINUE_CONVERSATION"; // Default
+  let iniciarTimer = false;
 
-  const { tipoPersona, nombrePersona, nombreCuidador, parentescoCuidador } = datosDeSupervision;
+  const { tipoPersona, nombrePersona, nombreCuidador } = datosDeSupervision;
 
-  // 1. Detección de Frases de Riesgo Específicas
   let riesgoDetectado = null;
   for (const fraseRiesgo of FRASES_RIESGO_PERSONA_SUPERVISADA) {
     if (mensajeLower.includes(fraseRiesgo)) {
@@ -107,40 +128,79 @@ export function responderComoCuidador(mensajePersonaSupervisada, emocionDetectad
   if (riesgoDetectado) {
     console.log(`[modo_supervision_vulnerable] Frase de riesgo detectada de ${nombrePersona}: "${riesgoDetectado}"`);
     willyMessage = obtenerFraseSupervisionAdaptada(tipoPersona, 'respuestaRiesgoSerio', datosDeSupervision);
-    // Ajustar el mensaje para incluir el nombre del cuidador si es posible
-    willyMessage = willyMessage.replace("{nombreCuidador}", nombreCuidador || "un adulto");
-    suggestedAction = "ALERT_CUIDADOR_IMMEDIATE"; // Sugiere que el sistema debería notificar al cuidador
-    // En este caso, la respuesta de Willy es directa y no necesita mucho fraseo de OpenAI,
-    // pero el 'furtherContext' podría ser para que OpenAI elija la mejor forma de decirlo.
-    needsOpenAIPhrasing = true;
+    willyMessage = willyMessage.replace("{nombreCuidador}", nombreCuidador || "un adulto de confianza");
+
     furtherContextForOpenAI = `El usuario supervisado (${nombrePersona}, ${tipoPersona}) dijo algo preocupante: "${mensajePersonaSupervisada}". ` +
                               `Debes responder con calma, validando su sentir, pero URGENTEMENTE indicando que debe avisar a ${nombreCuidador} o un adulto. ` +
-                              `Usa la frase base: "${willyMessage}" y adáptala con empatía y claridad sobre la necesidad de ayuda real.`;
-
+                              `Usa la frase base: "${willyMessage}" y adáptala con empatía y claridad sobre la necesidad de ayuda real. ` +
+                              `Pregúntale si está bien y si puede avisar a alguien.`;
+    suggestedAction = "RISK_DETECTED_INITIATE_TIMER"; // Nueva acción
+    iniciarTimer = true;
   } else {
-    // 2. Si no hay riesgo serio, respuesta empática general adaptada al tipo de persona.
-    // Podríamos tener una lógica más compleja aquí basada en la emocionDetectada o el contenido.
-    // Por ahora, un check-in o una respuesta validante general.
-
-    // Si el mensaje es corto o parece una pregunta simple, Willy puede hacer un check-in.
     if (mensajePersonaSupervisada.length < 15 && mensajePersonaSupervisada.includes("?")) {
         willyMessage = obtenerFraseSupervisionAdaptada(tipoPersona, 'checkIn', datosDeSupervision);
-    } else { // Respuesta más general de acompañamiento
-        let fraseBase = obtenerFraseSupervisionAdaptada(tipoPersona, 'respuestaRiesgoLeve', datosDeSupervision); // Usamos riesgoLeve como base para empatía general
-        // Personalizar un poco si hay emoción detectada
+    } else {
+        let fraseBase = obtenerFraseSupervisionAdaptada(tipoPersona, 'respuestaRiesgoLeve', datosDeSupervision);
         if (emocionDetectada && emocionDetectada !== 'neutro' && emocionDetectada !== 'otro') {
             fraseBase += ` Noto que quizás te sientes ${emocionDetectada}.`;
         }
         willyMessage = fraseBase + ` ¿Hay algo que te gustaría contarme o hacer, ${nombrePersona}?`;
-        needsOpenAIPhrasing = true; // Para que Willy lo diga con su tono
         furtherContextForOpenAI = `Responde a ${nombrePersona} (${tipoPersona}) de forma cálida y presente, basándote en: "${willyMessage}". El mensaje original fue: "${mensajePersonaSupervisada}".`;
     }
+  }
+
+  // Si un timer estaba activo y ahora hay una respuesta (no de riesgo), cancelarlo.
+  if (timerNoRespuestaId && !riesgoDetectado) {
+    clearTimeout(timerNoRespuestaId);
+    timerNoRespuestaId = null;
+    console.log("[modo_supervision_vulnerable] Temporizador de no respuesta cancelado debido a nueva interacción.");
   }
 
   return {
     willyMessage,
     needsOpenAIPhrasing,
     furtherContextForOpenAI,
-    suggestedAction
+    suggestedAction,
+    iniciarTimer // Indica a la API si debe iniciar el temporizador
   };
+}
+
+/**
+ * Inicia el temporizador de no respuesta. (Conceptual, la ejecución real del timer y su persistencia
+ * dependerían del entorno de la aplicación - Node.js para backend, o Service Worker en frontend).
+ * @param {string} userIdCuidador
+ * @param {object} datosSupervisados
+ * @param {string} ultimaInteraccionWilly - El mensaje que Willy envió y espera respuesta.
+ * @param {function} callbackAlExpirar - Función a llamar si el timer expira.
+ */
+export function iniciarTemporizadorNoRespuesta(userIdCuidador, datosSupervisados, ultimaInteraccionWilly, callbackAlExpirar) {
+  if (timerNoRespuestaId) {
+    clearTimeout(timerNoRespuestaId); // Limpiar timer anterior si existe
+  }
+  const DURACION_TIMER_MS = 2 * 60 * 1000; // Ejemplo: 2 minutos
+
+  console.log(`[modo_supervision_vulnerable] Iniciando temporizador de no respuesta para ${datosSupervisados.nombrePersona} (${DURACION_TIMER_MS / 1000}s).`);
+
+  timerNoRespuestaId = setTimeout(async () => {
+    console.log(`[modo_supervision_vulnerable] ¡TEMPORIZADOR EXPIRADO para ${datosSupervisados.nombrePersona}! No hubo respuesta.`);
+    timerNoRespuestaId = null; // Limpiar el ID
+    if (supervisionActiva && datosPersonaSupervisada && datosPersonaSupervisada.userIdCuidador === userIdCuidador) {
+        // Asegurarse que la supervisión sigue activa para el mismo cuidador
+        const mensajeAlerta = prepararMensajeAlertaEmergencia(datosSupervisados, ultimaInteraccionWilly);
+        callbackAlExpirar(mensajeAlerta, datosSupervisados); // Llamar al callback con el mensaje y datos
+    } else {
+        console.log("[modo_supervision_vulnerable] Supervisión ya no activa o cambiada, no se envía alerta por timer.");
+    }
+  }, DURACION_TIMER_MS);
+}
+
+/**
+ * Cancela el temporizador de no respuesta si está activo.
+ */
+export function cancelarTemporizadorNoRespuesta() {
+    if (timerNoRespuestaId) {
+        clearTimeout(timerNoRespuestaId);
+        timerNoRespuestaId = null;
+        console.log("[modo_supervision_vulnerable] Temporizador de no respuesta cancelado manualmente.");
+    }
 }

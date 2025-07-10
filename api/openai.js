@@ -21,12 +21,16 @@ import { esEmocionNegativa, EMOCIONES } from '../modules/analisis_emocional/emoc
 import { buscarFraseInspiradora, generarRespuestaFrustracionReflexiva } from '../modules/intervenciones_emocionales/frustracionReflexiva.js';
 import { evaluarSituacionYRecomendar as evaluarSituacionYRecomendarDefensa } from '../modules/defensaSegura.js';
 import { obtenerInfoProfesion } from '../modules/conocimientoProfesional.js';
-import * as Supervisor from '../modules/cameraSupervisor.js'; // Importar el módulo de supervisión
+import * as Supervisor from '../modules/cameraSupervisor.js';
+import * as SupervisionVulnerable from '../modules/modo_supervision_vulnerable.js'; // NUEVA IMPORTACIÓN
+import * as RespuestasGuiadas from '../modules/respuestasGuiadas.js'; // Para TIPOS_PERSONA_VULNERABLE
+import { clasificarSentimientoDePerdida } from '../modules/analisis_contexto.js'; // Para la Mejora 14
 
 
 const OPENAI_API_KEY = 'TU_API_KEY_AQUI'; // Reemplaza con la clave real
 const MOCK_USER_ID = 'user123'; // Placeholder for user identification, debería ser dinámico
 let currentUserRole = null; // Session-level storage for user's profession/role for MOCK_USER_ID
+let esperandoRespuestaConsentimientoSensores = false; // Para el flujo de consentimiento
 
 // Keywords for memory recall
 const RECALL_KEYWORDS = ['recuerdas', 'te acuerdas', 'qué te dije', 'lo que te conté', 'último que hablamos'];
@@ -49,84 +53,173 @@ export async function getWillyResponse(userMessageContent, overrideSystemPrompt 
   let willyResponseContent = "";
   let initialTherapyMessage = "";
 
-  // --- Inicio Manejo de Supervisión Simulada ---
-  // Esta función interna será el callback para el supervisor
-  async function handleSimulatedDetectionEvent(userId, eventDetails) {
-    console.log(`[api/openai.js] Evento de supervisión simulada recibido para ${userId}:`, eventDetails);
+  // --- Inicio Manejo de Supervisión Ética para Vulnerables y Emergencias ---
+  // Esta función se llamaría cuando el temporizador de no respuesta expira.
+  async function handleTimerExpirationForVulnerable(mensajeAlerta, datosSupervisados) {
+    console.log(`[api/openai.js] Timer expirado para ${datosSupervisados.nombrePersona}. Mensaje de alerta a contacto: ${mensajeAlerta}`);
+    // 1. (Conceptual) Enviar `mensajeAlerta` al contacto de emergencia.
+    //    Este es el punto donde se usaría un servicio de SMS/Email.
+    //    Por ahora, lo registraremos.
+    await guardarMensajeFirestore({
+        userId: datosSupervisados.userIdCuidador, // Asociar al cuidador
+        role: 'system_alert',
+        message: `ALERTA ENVIADA A CONTACTO DE EMERGENCIA (${datosSupervisados.contactoEmergencia.nombre}): ${mensajeAlerta}`,
+        emotion: EMOCIONES.PREOCUPACION // Emoción del sistema/Willy
+    });
 
-    try {
-      await guardarMensajeFirestore({
-        userId: userId,
-        role: 'system_event',
-        message: `(Supervisión Simulada) Evento: ${eventDetails.type} - ${eventDetails.description}`,
-        emotion: null,
-      });
-    } catch (error) {
-      console.error("[api/openai.js] Error guardando evento de supervisión en Firestore:", error);
-    }
+    // 2. Solicitar permiso para sensores al cuidador (MOCK_USER_ID)
+    esperandoRespuestaConsentimientoSensores = true; // Activar flag
+    // Guardar temporalmente para quién se pide el consentimiento
+    // En un sistema real, esto sería más robusto (ej. en el estado de la supervisión)
+    global.pendingSensorConsentFor = datosSupervisados.nombrePersona;
 
-    const overrideSystemPromptForEvent = baseSystemPrompt +
-        `\n\n[Instrucción especial: Has 'detectado' un evento simulado mientras supervisabas a petición del usuario. ` +
-        `El evento es: '${eventDetails.description}'. ` +
-        `Tu objetivo es informar al usuario de esta 'detección' simulada de forma calmada y preguntar si todo está bien, ` +
-        `o si quiere 'saber más' (lo cual es solo una forma de continuar la interacción, ya que no hay más detalles reales). ` +
-        `Recuerda enfatizar sutilmente que es una simulación para su tranquilidad, no una alarma real. Pregunta directamente si todo está bien.]`;
+    const preguntaConsentimiento = `Detecto una situación potencialmente urgente con ${datosSupervisados.nombrePersona} y no ha respondido a mis intentos de contacto. ` +
+                                   `Se ha enviado una notificación a su contacto de emergencia (${datosSupervisados.contactoEmergencia.nombre}). ` +
+                                   `Para ayudarte a evaluar mejor la situación de forma remota, ¿me das tu permiso explícito para (conceptualmente) activar temporalmente la cámara y el micrófono del dispositivo cercano a ${datosSupervisados.nombrePersona}? ` +
+                                   `Por favor, responde 'Sí, activar sensores para ${datosSupervisados.nombrePersona}' o 'No, no activar sensores para ${datosSupervisados.nombrePersona}'. Tu privacidad y la suya son mi prioridad.`;
 
-    // Para esta simulación, generamos la respuesta que Willy daría y la guardamos en el historial.
-    // En una app real, esto podría disparar una notificación push al usuario.
-    try {
-      const willysReactionToSimulatedEvent = await getWillyResponse(
-          `He 'detectado' algo mientras supervisaba: ${eventDetails.description}`, // Mensaje gatillo interno
-          overrideSystemPromptForEvent // Usar el prompt especializado
-      );
-      console.log(`[api/openai.js] Willy reaccionaría al evento simulado con: ${willysReactionToSimulatedEvent}`);
-      await guardarMensajeFirestore({
-          userId: userId,
-          role: 'willy',
-          message: `(Respuesta a supervisión simulada) ${willysReactionToSimulatedEvent}`,
-          emotion: EMOCIONES.CALMA,
-      });
-      // TODO: Implementar mecanismo para enviar esta `willysReactionToSimulatedEvent` al frontend de forma proactiva.
-    } catch (error) {
-        console.error("[api/openai.js] Error al generar o guardar la reacción de Willy al evento simulado:", error);
-    }
+    // Este mensaje debe llegar al CUIDADOR. En esta simulación, asumimos que la próxima interacción del MOCK_USER_ID es la respuesta.
+    // En una app real, esto sería una notificación push al cuidador.
+    // Por ahora, si el cuidador escribe algo, se interpretará como respuesta a esto si el flag está activo.
+    // Para la simulación, podemos hacer que `getWillyResponse` devuelva este mensaje si detecta el estado.
+    // O, si esta función es llamada por un evento externo, este sería el mensaje a enviar al cuidador.
+    console.log(`[api/openai.js] PREGUNTAR AL CUIDADOR: ${preguntaConsentimiento}`);
+    // Devolver este mensaje para que el cuidador lo vea.
+    // Esto es conceptual, la entrega de este mensaje es un desafío en la arquitectura actual.
+    // Si esto fuera un endpoint /api/timer-expired, devolvería esto.
+    // Como está dentro de getWillyResponse, necesitamos una forma de que este sea el siguiente mensaje de Willy.
+    // Por ahora, este flujo es más conceptual para la lógica de Willy.
+    // Si getWillyResponse es llamado después de esto por el cuidador, el flag esperandoRespuestaConsentimientoSensores se usará.
   }
 
-  const START_SUPERVISION_KEYWORDS = ["vigila mientras descanso", "modo vigilancia", "supervisa por un rato", "estate atento", "cuida la casa", "supervisión pasiva"];
-  const STOP_SUPERVISION_KEYWORDS = ["deja de vigilar", "desactiva vigilancia", "ya no vigiles", "puedes parar la supervisión", "detén la supervisión"];
 
-  if (!overrideSystemPrompt && START_SUPERVISION_KEYWORDS.some(kw => userMessageLower.includes(kw))) {
-    if (Supervisor.isSupervisionOn()) {
-      willyResponseContent = "Ya estoy en modo de atención simulada. Estaré 'alerta' por ti.";
+  const START_SUPERVISION_VULNERABLE_KEYWORDS = ["cuida a", "vigila a mi", "supervisa a"];
+  const STOP_SUPERVISION_VULNERABLE_KEYWORDS = ["deja de cuidar a", "termina la supervisión de", "finaliza supervisión de"];
+  const datosSupervisionActual = SupervisionVulnerable.obtenerDatosSupervision();
+
+  // A. Comandos del Cuidador para iniciar/detener supervisión vulnerable
+  if (!overrideSystemPrompt && !datosSupervisionActual) { // Solo si no hay una supervisión vulnerable ya activa
+    for (const kw of START_SUPERVISION_VULNERABLE_KEYWORDS) {
+      if (userMessageLower.startsWith(kw)) {
+        const  nombreYTipo = userMessageContent.substring(kw.length).trim();
+        // Parseo muy básico de "nombrePersona que es tipoPersona" o "nombrePersona mi parentesco"
+        // Ej: "cuida a Ana que es adulto mayor", "vigila a Leo mi hijo"
+        let nombrePersona = nombreYTipo;
+        let tipoPersona = RespuestasGuiadas.TIPOS_PERSONA_VULNERABLE.GENERAL_VULNERABLE; // Default
+        let parentesco = "ser querido"; // Default
+
+        // Intentar extraer tipoPersona (ej. "niño", "abuelita", "adulto mayor")
+        // Esto es una simplificación y necesitaría una lista más robusta de keywords y lógica de parseo.
+        if (nombreYTipo.toLowerCase().includes("niño pequeño")) tipoPersona = RespuestasGuiadas.TIPOS_PERSONA_VULNERABLE.NINO_PEQUENO;
+        else if (nombreYTipo.toLowerCase().includes("niño")) tipoPersona = RespuestasGuiadas.TIPOS_PERSONA_VULNERABLE.NINO_MAYOR;
+        else if (nombreYTipo.toLowerCase().includes("abuelit") || nombreYTipo.toLowerCase().includes("adulto mayor")) tipoPersona = RespuestasGuiadas.TIPOS_PERSONA_VULNERABLE.ADULTO_MAYOR;
+        else if (nombreYTipo.toLowerCase().includes("enferm")) tipoPersona = RespuestasGuiadas.TIPOS_PERSONA_VULNERABLE.PERSONA_ENFERMA;
+
+        // Extraer nombre (lo que queda antes de "que es", "mi", etc.)
+        const matchNombre = nombreYTipo.match(/^([\w\s]+)(?:\s+que es|\s+mi|\s+la)?/i);
+        if (matchNombre && matchNombre[1]) nombrePersona = matchNombre[1].trim();
+
+        willyResponseContent = SupervisionVulnerable.iniciarSupervision(MOCK_USER_ID, tipoPersona, nombrePersona, "contexto general", "cuidador principal", parentesco);
+        await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'user', message: userMessageContent, emotion: detectarEmocion(userMessageContent) });
+        await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'willy', message: willyResponseContent, emotion: EMOCIONES.CALMA });
+        return willyResponseContent;
+      }
+    }
+  }
+  if (!overrideSystemPrompt && datosSupervisionActual && datosSupervisionActual.userIdCuidador === MOCK_USER_ID) {
+     for (const kw of STOP_SUPERVISION_VULNERABLE_KEYWORDS) {
+        if (userMessageLower.startsWith(kw)) {
+            const nombrePersonaEnComando = userMessageContent.substring(kw.length).trim();
+            if (nombrePersonaEnComando.toLowerCase() === datosSupervisionActual.nombrePersona.toLowerCase()) {
+                willyResponseContent = SupervisionVulnerable.detenerSupervision(MOCK_USER_ID);
+                await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'user', message: userMessageContent, emotion: detectarEmocion(userMessageContent) });
+                await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'willy', message: willyResponseContent, emotion: EMOCIONES.CALMA });
+                return willyResponseContent;
+            }
+        }
+     }
+  }
+
+  // B. Si la supervisión vulnerable está activa Y el mensaje NO es un comando de parada del cuidador:
+  //    Asumimos que el mensaje es DE o SOBRE la persona supervisada.
+  if (datosSupervisionActual && datosSupervisionActual.userIdCuidador === MOCK_USER_ID) {
+      // Cancelar timer de no respuesta si el cuidador o la persona supervisada interactúa.
+      SupervisionVulnerable.cancelarTemporizadorNoRespuesta();
+
+      const emocionMsjSupervisado = detectarEmocion(userMessageContent);
+      const {
+          willyMessage: baseMsgCuidador,
+          needsOpenAIPhrasing,
+          furtherContextForOpenAI,
+          suggestedAction,
+          iniciarTimer
+      } = SupervisionVulnerable.responderComoCuidador(userMessageContent, emocionMsjSupervisado, datosSupervisionActual);
+
+      if (iniciarTimer) {
+          SupervisionVulnerable.iniciarTemporizadorNoRespuesta(
+              MOCK_USER_ID, // userId del cuidador
+              datosSupervisionActual,
+              baseMsgCuidador, // El mensaje que Willy "dijo" y espera respuesta
+              async (mensajeAlerta, datosSupervisadosTimer) => { // Callback si expira
+                  // Este callback se ejecuta cuando el timer expira
+                  await handleTimerExpirationForVulnerable(mensajeAlerta, datosSupervisadosTimer);
+                  // Proactivamente, Willy podría enviar un mensaje al cuidador si la interfaz lo permite
+                  // Por ahora, el estado 'esperandoRespuestaConsentimientoSensores' se activa.
+              }
+          );
+      }
+
+      if (needsOpenAIPhrasing) {
+          const systemPromptSupervision = baseSystemPrompt + `\n\n[Contexto de Supervisión Ética: Estás acompañando a ${datosSupervisionActual.nombrePersona} (${datosSupervisionActual.tipoPersona}). ` +
+                                          `El mensaje actual es: "${userMessageContent}". ` +
+                                          `Instrucciones específicas: ${furtherContextForOpenAI}]`;
+          // Guardar mensaje original del "usuario" (que podría ser la persona supervisada)
+          await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'user', message: userMessageContent, emotion: emocionMsjSupervisado });
+
+          // Obtener respuesta de Willy
+          willyResponseContent = await getWillyResponse(baseMsgCuidador, systemPromptSupervision); // Aquí se llama a getWillyResponse con el override
+      } else {
+          willyResponseContent = baseMsgCuidador;
+          // Guardar mensaje original del "usuario"
+          await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'user', message: userMessageContent, emotion: emocionMsjSupervisado });
+      }
+
+      await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'willy', message: willyResponseContent, emotion: detectarEmocion(willyResponseContent) || EMOCIONES.NEUTRO });
+      return willyResponseContent;
+  }
+
+  // C. Flujo de consentimiento para sensores (si el cuidador responde a la pregunta de Willy)
+  if (esperandoRespuestaConsentimientoSensores && global.pendingSensorConsentFor) {
+    const nombrePersonaPendiente = global.pendingSensorConsentFor;
+    let consentResponse = "";
+    if (userMessageLower.includes("sí activar sensores para " + nombrePersonaPendiente.toLowerCase()) || userMessageLower.includes("si activar sensores para " + nombrePersonaPendiente.toLowerCase())) {
+        consentResponse = `Entendido. (Conceptualmente) Iniciando activación temporal de sensores para ${nombrePersonaPendiente} para que puedas evaluar. Por favor, revisa tu sistema de visualización.`;
+        // Aquí la app frontend/externa recibiría una señal para activar la cámara/micrófono.
+        console.log(`[api/openai.js] CONSENTIMIENTO DADO para sensores de ${nombrePersonaPendiente}.`);
+    } else if (userMessageLower.includes("no activar sensores para " + nombrePersonaPendiente.toLowerCase())) {
+        consentResponse = `De acuerdo, no se activarán los sensores para ${nombrePersonaPendiente}. Te recomiendo contactarles directamente o verificar su estado lo antes posible si aún te preocupa.`;
+        console.log(`[api/openai.js] CONSENTIMIENTO DENEGADO para sensores de ${nombrePersonaPendiente}.`);
     } else {
-      Supervisor.startSupervision(MOCK_USER_ID, handleSimulatedDetectionEvent);
-      willyResponseContent = "Entendido. Activaré mi modo de atención simulada. Recuerda, no estoy viendo ni grabando nada realmente, pero estaré 'alerta' para darte tranquilidad. Avísame cuando quieras que me detenga.";
+        // Respuesta no clara, mantener el estado y quizás pedir clarificación.
+        consentResponse = `No entendí bien tu respuesta sobre los sensores para ${nombrePersonaPendiente}. Por favor, responde con 'Sí, activar sensores para ${nombrePersonaPendiente}' o 'No, no activar sensores para ${nombrePersonaPendiente}'.`;
     }
-    // Guardar el mensaje del usuario y la respuesta de Willy
-    const emocionDetectadaUsuario = detectarEmocion(userMessageContent);
-    await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'user', message: userMessageContent, emotion: emocionDetectadaUsuario });
-    await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'willy', message: willyResponseContent, emotion: EMOCIONES.CALMA });
-    return willyResponseContent;
+    esperandoRespuestaConsentimientoSensores = false; // Resetear flag tras primer intento de respuesta
+    delete global.pendingSensorConsentFor;
+
+    await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'user', message: userMessageContent, emotion: detectarEmocion(userMessageContent) });
+    await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'willy', message: consentResponse, emotion: EMOCIONES.CALMA });
+    return consentResponse;
   }
+  // --- Fin Manejo de Supervisión Ética para Vulnerables ---
 
-  if (!overrideSystemPrompt && STOP_SUPERVISION_KEYWORDS.some(kw => userMessageLower.includes(kw))) {
-    if (Supervisor.isSupervisionOn()) {
-      Supervisor.stopSupervision();
-      willyResponseContent = "De acuerdo, he desactivado el modo de atención simulada. Espero que hayas descansado bien.";
-    } else {
-      willyResponseContent = "No te preocupes, no tenía el modo de atención simulada activo en este momento.";
-    }
-    const emocionDetectadaUsuario = detectarEmocion(userMessageContent);
-    await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'user', message: userMessageContent, emotion: emocionDetectadaUsuario });
-    await guardarMensajeFirestore({ userId: MOCK_USER_ID, role: 'willy', message: willyResponseContent, emotion: EMOCIONES.CALMA });
-    return willyResponseContent;
-  }
-  // --- Fin Manejo de Supervisión Simulada ---
 
-  const emocionDetectada = detectarEmocion(userMessageContent); // Esto ya estaba, pero asegurar que se use la correcta si no es comando de supervisión
-  console.log(`[api/openai.js] Emoción detectada para mensaje de usuario (post-supervisión check): ${emocionDetectada}`);
+  // --- Resto del código existente (anclajes, frustración, terapia, análisis, etc.) ---
+  // Asegurarse que el guardado del mensaje de usuario original y su emoción se haga una sola vez.
+  // Si ya se guardó arriba por un comando de supervisión, no volver a guardarlo.
+  const emocionDetectadaOriginal = detectarEmocion(userMessageContent);
+  console.log(`[api/openai.js] Emoción detectada para mensaje de usuario (post-supervisión check): ${emocionDetectadaOriginal}`);
 
-  let userMessageId = null; // Ya estaba, asegurar que se use la correcta
+  let userMessageId = null;
   try {
     // GuardarMensajeFirestore ahora devuelve el ID del mensaje guardado.
     userMessageId = await guardarMensajeFirestore({
