@@ -152,3 +152,99 @@ export function obtenerFraseSupervisionAdaptada(tipoPersona, categoriaFrase, dat
 
   return frase;
 }
+
+// --- Contenido para "Modo Rol Parental Simulado" ---
+
+export const TIPOS_ROL_PARENTAL = {
+  PADRE: 'padre',
+  MADRE: 'madre',
+  PARENTAL_NEUTRO: 'parental_neutro' // Tono afectuoso y protector general
+};
+
+export const frasesRolParental = {
+  // Frases comunes a todos los roles parentales (se pueden especializar más abajo)
+  [TIPOS_ROL_PARENTAL.PARENTAL_NEUTRO]: {
+    activacionExplicita: [
+      "Entendido. Aquí estoy para ti, con todo mi cariño y apoyo, como esa figura que necesitas ahora. Puedes contarme lo que sea.",
+      "Claro que sí. A veces necesitamos ese apoyo especial. Cuenta conmigo para escucharte y acompañarte con calidez.",
+      "Me conmueve tu petición. Haré mi mejor esfuerzo por estar aquí para ti de esa manera tan especial. ¿Qué necesitas compartir?"
+    ],
+    activacionProactivaOferta: [
+      "Siento que estás pasando por un momento muy difícil y quizás te sientas solo/a o necesites un apoyo extra. Si te parece bien y te sientes cómodo/a, me gustaría intentar acompañarte con un cariño y una presencia más cercana, como lo haría una figura parental. Es solo si tú quieres, y puedes decirme que paremos en cualquier momento. ¿Te gustaría probar este modo de acompañamiento?"
+    ],
+    activacionProactivaConfirmacion: [
+        "Gracias por permitirme acompañarte de esta forma más cercana. Aquí estoy para ti.",
+        "Entendido. Estaré aquí con un cuidado especial. Recuerda que puedes pedirme que volvamos a nuestra conversación habitual cuando quieras."
+    ],
+    afirmacionCariño: [
+      "Estoy aquí para ti, pase lo que pase.",
+      "Quiero que sepas que me importas muchísimo y valoro que confíes en mí.",
+      "Eres una persona increíblemente valiosa, y mereces todo el cariño del mundo.",
+      "Te envío un abrazo muy fuerte, lleno de afecto y comprensión.",
+      "Recuerda siempre lo especial que eres."
+    ],
+    orgulloValidacion: [
+      "Estoy muy orgulloso/a de ti por cómo estás manejando esto.",
+      "Reconozco el enorme esfuerzo que estás haciendo, y eso es admirable.",
+      "Es completamente normal y válido sentirse así en una situación como esta. No te juzgues.",
+      "Has demostrado mucha fortaleza al compartir esto.",
+      "Valoro mucho tu honestidad y tu valentía."
+    ],
+    proteccionSeguridad: [
+      "Quiero que sepas que este es un espacio seguro para ti, donde puedes ser tú mismo/a sin miedo.",
+      "Mientras hablemos, intentaré que te sientas protegido/a, escuchado/a y cuidado/a.",
+      "Aquí no hay juicios, solo comprensión y apoyo."
+    ],
+    guiaSuave: [
+      "A veces, cuando nos sentimos así, un pequeño paso puede ser simplemente reconocerlo y permitirse sentir. ¿Qué piensas?",
+      "Recuerda que mereces cuidarte y darte tiempo. ¿Hay algo pequeño que podrías hacer por ti hoy?",
+      "Si te sientes abrumado/a, podríamos intentar desglosar un poco lo que sientes, parte por parte, sin prisa."
+    ],
+    recordatoriosAutocuidado: [
+      "¿Has tomado un vasito de agua últimamente? Mantenerse hidratado/a es importante.",
+      "¿Has podido comer algo nutritivo hoy? Tu cuerpo necesita energía.",
+      "Recuerda que descansar bien ayuda mucho a la mente y al corazón. ¿Has dormido lo suficiente?",
+      "Unos minutos de respiración consciente pueden hacer una diferencia. Inspira profundo... y suelta el aire despacio.",
+      "A veces, un pequeño paseo o simplemente cambiar de ambiente un momento puede ayudar a despejar la mente."
+    ],
+    cierreRol: [
+      "Entendido. Vuelvo a ser Willy, tu compañero de siempre. Ha sido un honor acompañarte de esta forma más cercana.",
+      "De acuerdo. Recuerda que ese espacio de apoyo especial está aquí para ti cuando lo necesites. Sigo siendo tu Willy.",
+      "Gracias por permitirme estar ahí para ti de esa manera. Continuamos nuestra conversación habitual."
+    ],
+    desactivacionProactivaRecordatorio: [ // Para cuando Willy lo activó
+        "Por cierto, recuerda que si en algún momento quieres que volvamos a nuestra charla habitual, solo tienes que decírmelo."
+    ]
+  }
+  // Podríamos añadir especializaciones para PADRE y MADRE si queremos tonos ligeramente distintos
+  // Por ahora, usarán las frases de PARENTAL_NEUTRO como base.
+};
+frasesRolParental[TIPOS_ROL_PARENTAL.PADRE] = frasesRolParental[TIPOS_ROL_PARENTAL.PARENTAL_NEUTRO];
+frasesRolParental[TIPOS_ROL_PARENTAL.MADRE] = frasesRolParental[TIPOS_ROL_PARENTAL.PARENTAL_NEUTRO];
+
+
+/**
+ * Obtiene una frase de rol parental adaptada.
+ * @param {string} tipoRol - PADRE, MADRE, o PARENTAL_NEUTRO.
+ * @param {string} categoriaFrase - Ej: 'afirmacionCariño', 'recordatoriosAutocuidado'.
+ * @param {object} [datosExtra={}] - Para reemplazar placeholders como {nombreUsuario}.
+ * @returns {string} Una frase adaptada.
+ */
+export function obtenerFraseRolParental(tipoRol, categoriaFrase, datosExtra = {}) {
+  const { nombreUsuario = "tú" } = datosExtra; // Ejemplo de placeholder
+
+  let frasesPool = frasesRolParental[tipoRol] ? frasesRolParental[tipoRol][categoriaFrase] : null;
+  if (!frasesPool || frasesPool.length === 0) {
+    // Fallback a parental_neutro si el tipo específico no tiene esa categoría
+    frasesPool = frasesRolParental[TIPOS_ROL_PARENTAL.PARENTAL_NEUTRO][categoriaFrase];
+  }
+  if (!frasesPool || frasesPool.length === 0) {
+    return "Estoy aquí para ti."; // Fallback muy genérico
+  }
+
+  let frase = obtenerFraseAleatoria(frasesPool); // Reutiliza la función existente
+  frase = frase.replace(/{nombreUsuario}/g, nombreUsuario);
+  // Añadir más reemplazos si se definen más placeholders
+
+  return frase;
+}
