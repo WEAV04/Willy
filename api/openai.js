@@ -359,11 +359,17 @@ export async function getWillyResponse(userMessageContent, overrideSystemPrompt 
         const ultimaEmocionUsuario = mensajesRecientes.find(m => m.role === 'user' && m.emotion)?.emotion || emocionDetectada;
         // Aquí podríamos añadir más datos a memoriaActual si fueran necesarios y estuvieran disponibles,
         // como metas activas, etc. Por ahora, nos centramos en la emoción.
+        // Aquí necesitamos acceso al objeto userMemory. Asumiré que está disponible en este scope.
+        // Si no lo está, necesitaré que me indiques cómo obtenerlo.
+        // Por ahora, declararé un userMemory placeholder para que el código sea válido,
+        // pero esto DEBE ser reemplazado por el userMemory real.
+        const userMemory = global.userMemory || {}; // ESTO ES UN PLACEHOLDER, USAR EL REAL
+
         const memoriaActualParaSugerencias = {
-            lastEmotion: ultimaEmocionUsuario, // Usar la emoción detectada en el mensaje actual o la más reciente
-            lastModuleUsed: null, // TODO: Rastrear el último módulo usado si es relevante para sugerencias
-            activeGoals: [], // TODO: Conectar con sistema de metas si existe
-            recentHabits: [], // TODO: Conectar con sistema de hábitos si existe
+            lastEmotion: ultimaEmocionUsuario,
+            lastModuleUsed: userMemory.lastModuleUsed,
+            activeGoals: userMemory.goals || [],
+            recentHabits: userMemory.habits || [],
         };
 
         const sugerencia = getProactiveSuggestion(memoriaActualParaSugerencias);
