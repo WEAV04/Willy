@@ -2,23 +2,18 @@
 
 /**
  * Analiza el contexto emocional reciente y las metas activas del usuario.
+ * @param {object} memory - Objeto que simula la memoria de Willy.
  * @returns {object} Un objeto con el análisis del contexto.
- *                   Ej: { mood: "slightly_negative", activeGoals: ["escribir_libro"] }
  */
-function analyzeContext() {
-  // TODO: Conectar con el sistema de memoria para obtener emociones recientes.
-  // TODO: Conectar con el sistema de memoria para obtener metas activas.
-  // TODO: Implementar lógica para interpretar las emociones y el progreso de metas.
+export function analyzeContext(memory) {
+  const { lastEmotion, lastModuleUsed, activeGoals, recentHabits } = memory || {};
 
-  console.log("ContextAnalyzer: Analizando contexto...");
-  // Placeholder:
-  return {
-    mood: "neutral", // "positive", "negative", "neutral", "slightly_positive", "slightly_negative"
-    recentConversationTopics: [], // Temas de la conversación reciente
-    activeGoals: [], // IDs de metas activas
-    timeOfDay: new Date().getHours(), // Para sugerencias basadas en la hora
-    lastInteractionType: null, // Tipo de la última interacción (ej: "journal_entry", "micro_habit_completed")
+  const context = {
+    emotion: lastEmotion || null,
+    recentModule: lastModuleUsed || null,
+    hasGoals: activeGoals && activeGoals.length > 0,
+    hasHabits: recentHabits && recentHabits.length > 0,
   };
-}
 
-module.exports = { analyzeContext };
+  return context;
+}
