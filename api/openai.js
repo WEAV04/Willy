@@ -33,6 +33,9 @@ import * as ModoCrisis from '../modules/modoCrisis.js';
 // Importaciones para Registro Ético de Eventos Críticos (Mejora 21)
 import * as EventosCriticos from '../modules/eventosCriticos.js';
 
+// Importación para Sugerencias Proactivas (Mejora #32)
+import { getProactiveSuggestion } from '../modules/suggestions/index.js';
+
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'TU_API_KEY_AQUI';
 const MOCK_USER_ID = 'user123';
@@ -343,7 +346,46 @@ export async function getWillyResponse(userMessageContent, overrideSystemPrompt 
         willyResponseContent = await getOpenAIResponse(finalSystemPrompt, MOCK_USER_ID, userMessageContent);
     }
 
-    return guardarYFinalizarRespuestaWilly(willyResponseContent, null, ['general_response']);
+    // --- INTEGRACIÓN DE SUGERENCIAS PROACTIVAS (Mejora #32) ---
+    // Evitar sugerencias en flujos críticos ya manejados (crisis, supervisión activa explícita)
+    // o si ya hay una respuesta definitiva de un flujo especial.
+    const modoCrisisActivo = ModoCrisis.estaEnModoCrisis();
+    const supervisionActiva = SupervisionVulnerable.obtenerDatosSupervision()?.activo; // Suponiendo que 'activo' es un booleano
+    const esRespuestaDeFlujoCritico = respuestaWillyDefinitiva && respuestaWillyDefinitiva !== ""; // Si ya tenemos una respuesta de crisis/supervisión/consentimiento
+
+    if (!modoCrisisActivo && !supervisionActiva && !esRespuestaDeFlujoCritico) {
+        // Construir un objeto 'memoriaActual' simulado para las sugerencias
+        const mensajesRecientes = await obtenerMensajesRecientes(MOCK_USER_ID, 3);
+        const ultimaEmocionUsuario = mensajesRecientes.find(m => m.role === 'user' && m.emotion)?.emotion || emocionDetectada;
+        // Aquí podríamos añadir más datos a memoriaActual si fueran necesarios y estuvieran disponibles,
+        // como metas activas, etc. Por ahora, nos centramos en la emoción.
+        const memoriaActualParaSugerencias = {
+            lastEmotion: ultimaEmocionUsuario, // Usar la emoción detectada en el mensaje actual o la más reciente
+            lastModuleUsed: null, // TODO: Rastrear el último módulo usado si es relevante para sugerencias
+            activeGoals: [], // TODO: Conectar con sistema de metas si existe
+            recentHabits: [], // TODO: Conectar con sistema de hábitos si existe
+        };
+
+        const sugerencia = getProactiveSuggestion(memoriaActualParaSugerencias);
+        if (sugerencia?.valid) {
+            // Si willyResponseContent ya tiene algo (respuesta de OpenAI general), añadir.
+            // Si respuestaWillyDefinitiva tiene algo (respuesta de anclaje, etc.), usar esa.
+            if (willyResponseContent) {
+                willyResponseContent += `\n\n💡 ${sugerencia.message}`;
+            } else if (respuestaWillyDefinitiva) {
+                // Esto es poco probable aquí, ya que esRespuestaDeFlujoCritico lo cubriría, pero por si acaso.
+                respuestaWillyDefinitiva += `\n\n💡 ${sugerencia.message}`;
+                 return guardarYFinalizarRespuestaWilly(respuestaWillyDefinitiva, null, ['general_response_with_suggestion']);
+            } else {
+                // Caso muy improbable: no hay respuesta base. No debería ocurrir.
+                // Se podría considerar generar una respuesta base mínima si esto pasa.
+                // Por ahora, si no hay respuesta base, no añadimos la sugerencia sola.
+            }
+        }
+    }
+    // --- FIN INTEGRACIÓN DE SUGERENCIAS PROACTIVAS ---
+
+    return guardarYFinalizarRespuestaWilly(willyResponseContent || respuestaWillyDefinitiva, null, ['general_response']);
 }
 
 async function getOpenAIResponse(systemMessageContent, userIdForHistory = MOCK_USER_ID, userPromptForAPICall = null) {
