@@ -153,6 +153,39 @@ export function obtenerFraseSupervisionAdaptada(tipoPersona, categoriaFrase, dat
   return frase;
 }
 
+// --- Contenido para "Modo Crisis" ---
+export const frasesActivacionModoCrisis = [
+  "Estoy aquí contigo en este momento tan difícil. No estás solo/a.",
+  "Escucho tu dolor y quiero que sepas que estoy aquí para acompañarte.",
+  "Vamos a atravesar esto juntos, paso a paso. Me importas mucho."
+];
+
+export const frasesValidacionCrisis = [
+  "Es comprensible que te sientas así. Lo que sientes es válido.",
+  "Entiendo que esto es increíblemente doloroso para ti.",
+  "No tienes que ser fuerte ahora. Permítete sentir.",
+  "Estoy aquí, escuchándote sin ningún juicio."
+];
+
+export const frasesGuiaAyudaCrisis = [
+  "Hay personas que se preocupan por ti y quieren ayudarte. ¿Estarías dispuesto/a a que busquemos juntos alguna forma de contactar con alguien de confianza o un profesional?",
+  "Tu seguridad es lo más importante para mí ahora. ¿Me permitirías ayudarte a encontrar apoyo especializado?",
+  "Existen líneas de ayuda disponibles 24/7 con personas capacitadas para escucharte y ofrecerte apoyo inmediato. ¿Te gustaría que busquemos una juntos?",
+  "Si tienes un contacto de emergencia, o alguien en quien confíes mucho, podría ser un buen momento para comunicarte con esa persona."
+];
+
+export const frasesSugerenciaServicioEmergencia = [
+  "Lo que me estás contando es muy serio y me preocupa profundamente tu seguridad. En situaciones así, es vital buscar ayuda profesional de emergencia de inmediato. ¿Podrías considerar llamar al [Número de Emergencia Local, ej: 911 o 112]?",
+  "Por favor, si sientes que tu vida está en riesgo o que podrías hacerte daño, es crucial que contactes a los servicios de emergencia. Ellos están preparados para ayudarte.",
+  "Tu vida es muy valiosa. Hay ayuda disponible ahora mismo para mantenerte a salvo. Considera contactar a emergencias."
+];
+
+export const frasesCierreModoCrisis = [
+  "Me alegra mucho que te sientas un poco más estable. Recuerda que no estás solo/a y que hay apoyo disponible siempre que lo necesites.",
+  "Entendido. Sigo aquí para ti, como siempre. Si en algún momento vuelves a necesitar este espacio de contención, no dudes en decírmelo.",
+  "Has sido muy valiente al compartir esto. Si necesitas algo más, o simplemente compañía, aquí estoy."
+];
+
 // --- Contenido para "Modo Rol Parental Simulado" ---
 
 export const TIPOS_ROL_PARENTAL = {
